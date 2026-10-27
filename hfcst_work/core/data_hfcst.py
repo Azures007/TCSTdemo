@@ -1,0 +1,373 @@
+"""Data loading and globally assigned, patch-support-disjoint spatial splits."""
+from __future__ import annotations
+from pathlib import Path
+import math
+import h5py
+import numpy as np
+import scipy.io as sio
+
+IMAGE_KEYS = ("ori_data", "data", "image", "img", "HSI", "hsi", "X", "cube")
+GT_KEYS = ("map", "gt", "GT", "ground_truth", "label", "labels", "Y", "gt_map")
+
+
+def _load_mat(path):
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(f"MAT file not found: {path}")
+    try:
+        return {k: v for k, v in sio.loadmat(str(path)).items() if not k.startswith("__")}
+    except (NotImplementedError, ValueError, OSError):
+        with h5py.File(path, "r") as f:
+            return {k: np.asarray(f[k]) for k in f.keys()}
+
+
+def _pick_3d(d):
+    for k in IMAGE_KEYS:
+        if k in d and isinstance(d[k], np.ndarray) and d[k].ndim == 3:
+            return np.asarray(d[k]), k
+    for k, v in d.items():
+        if isinstance(v, np.ndarray) and v.ndim == 3:
+            return np.asarray(v), k
+    raise KeyError(f"No 3-D hyperspectral cube found; keys={list(d.keys())}")
+
+
+def _pick_2d(d):
+    for k in GT_KEYS:
+        if k in d and isinstance(d[k], np.ndarray) and d[k].ndim == 2:
+            return np.asarray(d[k]), k
+    for k, v in d.items():
+        if isinstance(v, np.ndarray) and v.ndim == 2:
+            return np.asarray(v), k
+    raise KeyError(f"No 2-D ground-truth array found; keys={list(d.keys())}")
+
+
+def _band_axis(shape, expected_bands=None):
+    if expected_bands is not None and expected_bands in shape:
+        return int(list(shape).index(expected_bands))
+    candidates = [i for i, s in enumerate(shape) if 3 <= s <= 2048]
+    # Prefer the spectral axis conventionally (usually the smallest dimension),
+    # but refuse ambiguous dimensions rather than silently sampling bands.
+    if not candidates:
+        raise ValueError(f"Cannot infer spectral axis from shape {shape}")
+    smallest = min(shape[i] for i in candidates)
+    winners = [i for i in candidates if shape[i] == smallest]
+    if len(winners) != 1:
+        raise ValueError(f"Ambiguous spectral axis for shape {shape}; set expected_bands")
+    return winners[0]
+
+
+def load_cube(image_path, expected_bands=None, verbose=True):
+    """Load image only. Does not open or inspect a GT file."""
+    d = _load_mat(image_path)
+    cube, key = _pick_3d(d)
+    axis = _band_axis(cube.shape, expected_bands)
+    cube = np.moveaxis(cube, axis, -1).astype(np.float32, copy=False)
+    finite_values = np.isfinite(cube)
+    valid = finite_values.all(axis=-1) & (np.linalg.norm(np.nan_to_num(cube), axis=-1) > 1e-12)
+    bad_scalar_count = int((~finite_values).sum())
+    cube = np.nan_to_num(cube, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
+    cube[~valid] = 0.0
+    audit = {"path": str(image_path), "mat_key": key, "shape_hwb": list(cube.shape),
+             "band_axis_original": int(axis), "bands": int(cube.shape[-1]),
+             "nonfinite_scalar_count": bad_scalar_count,
+             "invalid_pixel_count": int((~valid).sum()), "valid_pixel_count": int(valid.sum())}
+    if verbose:
+        print(f"[data] loaded {Path(image_path).name} key={key} shape={cube.shape} "
+              f"bands={cube.shape[-1]} invalid={audit['invalid_pixel_count']}", flush=True)
+    return cube, valid, audit
+
+
+def load_gt(gt_path, expected_shape=None):
+    d = _load_mat(gt_path)
+    gt, key = _pick_2d(d)
+    gt = np.asarray(gt, dtype=np.int64)
+    if expected_shape is not None and tuple(gt.shape) != tuple(expected_shape):
+        raise ValueError(f"GT shape {gt.shape} does not match image shape {expected_shape}")
+    return gt, key
+
+
+def align_cubes(source, target, band_mapping=None):
+    """Align only equal band counts or an explicit source/target index mapping."""
+    bs, bt = source.shape[-1], target.shape[-1]
+    if bs == bt and band_mapping is None:
+        return source, target, {"mode": "identity", "bands": bs}
+    if not band_mapping:
+        raise ValueError(
+            f"Band mismatch (source={bs}, target={bt}) without an explicit band_mapping. "
+            "Uniform index resampling is intentionally disabled because physical band correspondence is unknown.")
+    si = band_mapping.get("source_indices")
+    ti = band_mapping.get("target_indices")
+    if not isinstance(si, list) or not isinstance(ti, list) or len(si) != len(ti) or not si:
+        raise ValueError("band_mapping must contain equally sized non-empty source_indices and target_indices lists")
+    si, ti = np.asarray(si, dtype=int), np.asarray(ti, dtype=int)
+    if (si < 0).any() or (si >= bs).any() or (ti < 0).any() or (ti >= bt).any():
+        raise ValueError("band_mapping index outside source/target range")
+    return source[..., si], target[..., ti], {"mode": "explicit_indices", "bands": int(len(si)),
+                                              "source_indices": si.tolist(), "target_indices": ti.tolist()}
+
+
+def robust_source_scale(cube, train_coords, quantile=0.95):
+    if len(train_coords) == 0:
+        raise ValueError("Cannot estimate shared scale: source spatial training split is empty")
+    vals = np.abs(cube[train_coords[:, 0], train_coords[:, 1], :]).reshape(-1)
+    vals = vals[np.isfinite(vals)]
+    if vals.size == 0:
+        raise ValueError("Cannot estimate shared scale from non-finite source training values")
+    scale = float(np.quantile(vals, float(quantile)))
+    return max(scale, 1e-8), {"quantile": float(quantile), "scale": max(scale, 1e-8),
+                             "n_source_train_values": int(vals.size)}
+
+
+def _block_bounds(H, W, patch_size, grid_size):
+    bh = max(int(patch_size), int(math.ceil(H / max(1, grid_size))))
+    bw = max(int(patch_size), int(math.ceil(W / max(1, grid_size))))
+    blocks = []
+    bid = 0
+    for r0 in range(0, H, bh):
+        for c0 in range(0, W, bw):
+            blocks.append((bid, r0, min(H, r0 + bh), c0, min(W, c0 + bw)))
+            bid += 1
+    return blocks
+
+
+def _assign_source_blocks(blocks, gt, num_classes, ratios, rng):
+    # Greedy global block assignment uses class histograms only to balance splits;
+    # a block is never split by class, so cross-split patch support cannot overlap.
+    split_names = list(ratios)
+    hist = []
+    for _, r0, r1, c0, c1 in blocks:
+        labels = gt[r0:r1, c0:c1]
+        h = np.bincount(labels[(labels > 0) & (labels <= num_classes)], minlength=num_classes + 1)[1:]
+        hist.append(h.astype(float))
+    hist = np.asarray(hist) if hist else np.zeros((0, num_classes))
+    nblocks = len(blocks)
+    desired_blocks = {s: ratios[s] * nblocks for s in split_names}
+    desired_class = {s: hist.sum(axis=0) * ratios[s] for s in split_names}
+    assigned_blocks = {s: 0 for s in split_names}
+    assigned_class = {s: np.zeros(num_classes, dtype=float) for s in split_names}
+    jitter = rng.random(nblocks)
+    order = sorted(range(nblocks), key=lambda i: (hist[i].sum(), jitter[i]), reverse=True)
+    assignment = {}
+    for i in order:
+        eligible = [s for s in split_names if assigned_blocks[s] < math.ceil(desired_blocks[s])]
+        if not eligible:
+            eligible = split_names
+        scores = []
+        for s in eligible:
+            deficit = np.maximum(desired_class[s] - assigned_class[s], 0.0)
+            class_score = float((np.minimum(hist[i], deficit) / np.maximum(desired_class[s], 1.0)).sum())
+            block_score = (desired_blocks[s] - assigned_blocks[s]) / max(desired_blocks[s], 1.0)
+            scores.append(class_score + 0.35 * block_score + float(rng.random()) * 1e-5)
+        chosen = eligible[int(np.argmax(scores))]
+        assignment[blocks[i][0]] = chosen
+        assigned_blocks[chosen] += 1
+        assigned_class[chosen] += hist[i]
+    return assignment, {"block_counts": assigned_blocks,
+                        "class_pixel_counts_by_block_split": {s: assigned_class[s].astype(int).tolist() for s in split_names}}
+
+
+def _sample_cap(coords, gt, cap, rng):
+    if cap is None or int(cap) <= 0 or len(coords) == 0:
+        return coords
+    labels = gt[coords[:, 0], coords[:, 1]]
+    keep = []
+    for c in np.unique(labels):
+        idx = np.flatnonzero(labels == c)
+        if len(idx) > int(cap):
+            idx = rng.choice(idx, size=int(cap), replace=False)
+        keep.extend(idx.tolist())
+    return coords[np.asarray(sorted(keep), dtype=int)] if keep else np.empty((0, 2), dtype=int)
+
+
+def global_spatial_split(gt, valid_mask, num_classes, patch_size=11, grid_size=8,
+                         seed=1237, train_cap=150, constraint_cap=12,
+                         calibration_cap=80, validation_cap=150,
+                         block_overrides=None):
+    """Source split into four globally disjoint block sets; patch supports stay inside blocks."""
+    H, W = gt.shape
+    if valid_mask.shape != gt.shape:
+        raise ValueError("valid_mask and GT shapes differ")
+    rng = np.random.default_rng(seed)
+    blocks = _block_bounds(H, W, patch_size, grid_size)
+    ratios = {"train": 0.55, "constraint": 0.15, "calibration": 0.15, "validation": 0.15}
+    assignment, block_audit = _assign_source_blocks(blocks, gt, num_classes, ratios, rng)
+    overrides_applied = []
+    for item in (block_overrides or []):
+        bid = int(item["block"])
+        expected, destination = item.get("from"), str(item["to"])
+        if bid not in assignment:
+            raise ValueError(f"Block override references unknown block {bid}")
+        if destination not in ratios:
+            raise ValueError(f"Invalid split {destination!r} for block {bid}")
+        actual = assignment[bid]
+        if expected is not None and actual != str(expected):
+            raise ValueError(f"Block {bid} expected split {expected!r}, found {actual!r}; aborting")
+        assignment[bid] = destination
+        overrides_applied.append({"block": bid, "from": actual, "to": destination})
+    if overrides_applied:
+        block_audit["explicit_overrides"] = overrides_applied
+        block_audit["block_counts_after_overrides"] = {
+            s: int(sum(v == s for v in assignment.values())) for s in ratios
+        }
+        class_pixels = {s: np.zeros(num_classes, dtype=np.int64) for s in ratios}
+        for bid, r0, r1, c0, c1 in blocks:
+            labels = gt[r0:r1, c0:c1]
+            labels = labels[(labels > 0) & (labels <= num_classes)]
+            if labels.size:
+                class_pixels[assignment[bid]] += np.bincount(
+                    labels, minlength=num_classes + 1
+                )[1:num_classes + 1]
+        block_audit["class_pixel_counts_by_block_split"] = {
+            s: class_pixels[s].tolist() for s in ratios
+        }
+    radius = patch_size // 2
+    coords_by_split = {s: [] for s in ratios}
+    block_ids_by_split = {s: [] for s in ratios}
+    for bid, r0, r1, c0, c1 in blocks:
+        split = assignment[bid]
+        rr0, rr1 = r0 + radius, r1 - radius
+        cc0, cc1 = c0 + radius, c1 - radius
+        if rr1 <= rr0 or cc1 <= cc0:
+            continue
+        rr, cc = np.mgrid[rr0:rr1, cc0:cc1]
+        candidate = np.stack([rr.reshape(-1), cc.reshape(-1)], axis=1)
+        y = gt[candidate[:, 0], candidate[:, 1]]
+        ok = valid_mask[candidate[:, 0], candidate[:, 1]] & (y > 0) & (y <= num_classes)
+        candidate = candidate[ok]
+        if len(candidate):
+            coords_by_split[split].append(candidate)
+            block_ids_by_split[split].append(np.full(len(candidate), bid, dtype=np.int64))
+    coords = {}
+    block_ids = {}
+    caps = {"train": train_cap, "constraint": constraint_cap,
+            "calibration": calibration_cap, "validation": validation_cap}
+    for s, parts in coords_by_split.items():
+        allc = np.concatenate(parts, axis=0) if parts else np.empty((0, 2), dtype=int)
+        allb = np.concatenate(block_ids_by_split[s]) if block_ids_by_split[s] else np.empty(0, dtype=np.int64)
+        if s == "train" and caps[s] and caps[s] > 0:
+            # Cap per class while preserving block provenance.
+            selected = []
+            yy = gt[allc[:, 0], allc[:, 1]]
+            for c in np.unique(yy):
+                ix = np.flatnonzero(yy == c)
+                if len(ix) > caps[s]: ix = rng.choice(ix, int(caps[s]), replace=False)
+                selected.extend(ix.tolist())
+            selected = np.asarray(sorted(selected), dtype=int)
+            allc, allb = allc[selected], allb[selected]
+        elif s == "constraint" and caps[s] and caps[s] > 0:
+            selected = []
+            yy = gt[allc[:, 0], allc[:, 1]]
+            for c in np.unique(yy):
+                ix = np.flatnonzero(yy == c)
+                if len(ix) > caps[s]: ix = rng.choice(ix, int(caps[s]), replace=False)
+                selected.extend(ix.tolist())
+            selected = np.asarray(sorted(selected), dtype=int)
+            allc, allb = allc[selected], allb[selected]
+        elif s == "calibration" and caps[s] and caps[s] > 0:
+            selected = []
+            yy = gt[allc[:, 0], allc[:, 1]]
+            for c in np.unique(yy):
+                ix = np.flatnonzero(yy == c)
+                if len(ix) > caps[s]: ix = rng.choice(ix, int(caps[s]), replace=False)
+                selected.extend(ix.tolist())
+            selected = np.asarray(sorted(selected), dtype=int)
+            allc, allb = allc[selected], allb[selected]
+        elif s == "validation" and caps[s] and caps[s] > 0:
+            selected = []
+            yy = gt[allc[:, 0], allc[:, 1]]
+            for c in np.unique(yy):
+                ix = np.flatnonzero(yy == c)
+                if len(ix) > caps[s]: ix = rng.choice(ix, int(caps[s]), replace=False)
+                selected.extend(ix.tolist())
+            selected = np.asarray(sorted(selected), dtype=int)
+            allc, allb = allc[selected], allb[selected]
+        coords[s], block_ids[s] = allc, allb
+    class_counts = {}
+    for s, xy in coords.items():
+        y = gt[xy[:, 0], xy[:, 1]] if len(xy) else np.empty(0, dtype=int)
+        class_counts[s] = {str(c): int((y == c).sum()) for c in range(1, num_classes + 1)}
+    audit = {"block_count": len(blocks), "block_assignment": {str(k): v for k, v in assignment.items()},
+             "block_audit": block_audit, "class_counts": class_counts,
+             "patch_size": patch_size, "patch_support_disjoint_across_splits": True,
+             "note": "Each center is at least patch_radius from its assigned block boundary."}
+    return coords, block_ids, audit
+
+
+def global_target_split(valid_mask, patch_size=11, grid_size=8, seed=1237,
+                        estimate_ratio=0.70, max_estimate=512, max_validation=384):
+    """Split unlabeled target pixels by whole spatial blocks; never accesses target GT."""
+    H, W = valid_mask.shape
+    rng = np.random.default_rng(seed)
+    blocks = _block_bounds(H, W, patch_size, grid_size)
+    perm = rng.permutation(len(blocks))
+    n_est = int(round(len(blocks) * estimate_ratio))
+    if len(blocks) >= 2:
+        n_est = min(max(1, n_est), len(blocks) - 1)
+    else:
+        n_est = len(blocks)
+    estimate_ids = {blocks[i][0] for i in perm[:n_est]}
+    val_ids = {blocks[i][0] for i in perm[n_est:]}
+    radius = patch_size // 2
+    coords, bids = {"estimate": [], "validation": []}, {"estimate": [], "validation": []}
+    for bid, r0, r1, c0, c1 in blocks:
+        split = "estimate" if bid in estimate_ids else "validation"
+        rr0, rr1, cc0, cc1 = r0 + radius, r1 - radius, c0 + radius, c1 - radius
+        if rr1 <= rr0 or cc1 <= cc0:
+            continue
+        rr, cc = np.mgrid[rr0:rr1, cc0:cc1]
+        xy = np.stack([rr.reshape(-1), cc.reshape(-1)], axis=1)
+        xy = xy[valid_mask[xy[:, 0], xy[:, 1]]]
+        if len(xy):
+            coords[split].append(xy)
+            bids[split].append(np.full(len(xy), bid, dtype=np.int64))
+    out, out_bids = {}, {}
+    for s in coords:
+        xy = np.concatenate(coords[s], axis=0) if coords[s] else np.empty((0, 2), dtype=int)
+        bb = np.concatenate(bids[s]) if bids[s] else np.empty(0, dtype=np.int64)
+        cap = max_estimate if s == "estimate" else max_validation
+        if cap and len(xy) > cap:
+            chosen = np.sort(rng.choice(len(xy), size=int(cap), replace=False))
+            xy, bb = xy[chosen], bb[chosen]
+        out[s], out_bids[s] = xy, bb
+    audit = {"block_count": len(blocks), "estimate_blocks": sorted(estimate_ids),
+             "validation_blocks": sorted(val_ids), "estimate_n": len(out["estimate"]),
+             "validation_n": len(out["validation"]),
+             "patch_support_disjoint": len(estimate_ids & val_ids) == 0,
+             "validation_available": len(out["validation"]) > 0}
+    return out, out_bids, audit
+
+
+def build_patches(cube, coords, patch_size):
+    coords = np.asarray(coords, dtype=int).reshape(-1, 2)
+    if len(coords) == 0:
+        return np.empty((0, cube.shape[-1], patch_size, patch_size), dtype=np.float32)
+    radius = patch_size // 2
+    pad = np.pad(cube, ((radius, radius), (radius, radius), (0, 0)), mode="reflect")
+    patches = np.empty((len(coords), cube.shape[-1], patch_size, patch_size), dtype=np.float32)
+    for i, (r, c) in enumerate(coords):
+        patches[i] = pad[r:r + patch_size, c:c + patch_size].transpose(2, 0, 1)
+    return patches
+
+
+def audit_no_cross_split_patch_overlap(coords_by_split, patch_size):
+    """Conservative support-overlap audit; assumes coordinates belong to separate global blocks."""
+    radius = patch_size // 2
+    names = list(coords_by_split)
+    result = {"checked_splits": names, "patch_radius": radius, "no_cross_split_overlap": True,
+              "method": "global block assignment with patch-radius interior margins"}
+    # Explicit check on centers is a second guard; block interiors establish the full-support guarantee.
+    for i, a in enumerate(names):
+        ca = np.asarray(coords_by_split[a], dtype=int).reshape(-1, 2)
+        for b in names[i+1:]:
+            cb = np.asarray(coords_by_split[b], dtype=int).reshape(-1, 2)
+            if not len(ca) or not len(cb):
+                continue
+            # Chebyshev distance < patch_size implies support overlap.
+            for chunk_start in range(0, len(ca), 256):
+                aa = ca[chunk_start:chunk_start+256]
+                dist = np.max(np.abs(aa[:, None, :] - cb[None, :, :]), axis=2)
+                if np.any(dist < patch_size):
+                    result["no_cross_split_overlap"] = False
+                    result["overlap_pair"] = [a, b]
+                    return result
+    return result

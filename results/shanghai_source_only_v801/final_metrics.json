@@ -1,0 +1,41 @@
+{
+  "dataset": "shanghai_hangzhou",
+  "bands": 198,
+  "num_classes": 3,
+  "cycles": [],
+  "best_src_val": 92.0,
+  "source_split": {
+    "train": 150,
+    "constraint": 36,
+    "cal_pool": 75,
+    "val": 75
+  },
+  "target_metrics": {
+    "OA": 74.49963154016213,
+    "AA": 69.46639982540334,
+    "Kappa": 0.4951156279295374,
+    "MacroF1": 69.9056425011411,
+    "class_accuracy": [
+      85.8781799035637,
+      97.57262750161394,
+      24.94839207103241
+    ],
+    "confusion_matrix": [
+      [
+        15495,
+        2547,
+        1
+      ],
+      [
+        1272,
+        75570,
+        608
+      ],
+      [
+        64,
+        30112,
+        10031
+      ]
+    ]
+  }
+}

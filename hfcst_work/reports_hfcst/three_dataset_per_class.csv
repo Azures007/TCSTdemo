@@ -1,0 +1,23 @@
+﻿task,run_dir,class_index_zero_based,class_number_one_based,support,correct,class_accuracy,class_accuracy_percent
+Houston13 -> Houston18,/root/autodl-tmp/TCSTdemo/hfcst_work/results_hfcst/houston_splitfix_20261025_113646_s1237,0,1,1353,10,0.007390983000739098,0.7390983000739099
+Houston13 -> Houston18,/root/autodl-tmp/TCSTdemo/hfcst_work/results_hfcst/houston_splitfix_20261025_113646_s1237,1,2,4888,2,0.0004091653027823241,0.04091653027823241
+Houston13 -> Houston18,/root/autodl-tmp/TCSTdemo/hfcst_work/results_hfcst/houston_splitfix_20261025_113646_s1237,2,3,2766,454,0.16413593637020968,16.413593637020966
+Houston13 -> Houston18,/root/autodl-tmp/TCSTdemo/hfcst_work/results_hfcst/houston_splitfix_20261025_113646_s1237,3,4,22,22,1.0,100.0
+Houston13 -> Houston18,/root/autodl-tmp/TCSTdemo/hfcst_work/results_hfcst/houston_splitfix_20261025_113646_s1237,4,5,5347,2676,0.5004675518982608,50.04675518982607
+Houston13 -> Houston18,/root/autodl-tmp/TCSTdemo/hfcst_work/results_hfcst/houston_splitfix_20261025_113646_s1237,5,6,32459,20560,0.633414461320435,63.3414461320435
+Houston13 -> Houston18,/root/autodl-tmp/TCSTdemo/hfcst_work/results_hfcst/houston_splitfix_20261025_113646_s1237,6,7,6365,5463,0.8582875098193244,85.82875098193244
+HyRANK Dioni -> Loukia,/root/autodl-tmp/TCSTdemo/hfcst_work/results_hfcst/hyrank_restoredfastfix_v2,0,1,288,44,0.1527777777777778,15.277777777777779
+HyRANK Dioni -> Loukia,/root/autodl-tmp/TCSTdemo/hfcst_work/results_hfcst/hyrank_restoredfastfix_v2,1,2,67,0,0.0,0.0
+HyRANK Dioni -> Loukia,/root/autodl-tmp/TCSTdemo/hfcst_work/results_hfcst/hyrank_restoredfastfix_v2,2,3,542,178,0.3284132841328413,32.84132841328413
+HyRANK Dioni -> Loukia,/root/autodl-tmp/TCSTdemo/hfcst_work/results_hfcst/hyrank_restoredfastfix_v2,3,4,79,37,0.46835443037974683,46.835443037974684
+HyRANK Dioni -> Loukia,/root/autodl-tmp/TCSTdemo/hfcst_work/results_hfcst/hyrank_restoredfastfix_v2,4,5,1401,0,0.0,0.0
+HyRANK Dioni -> Loukia,/root/autodl-tmp/TCSTdemo/hfcst_work/results_hfcst/hyrank_restoredfastfix_v2,5,6,500,0,0.0,0.0
+HyRANK Dioni -> Loukia,/root/autodl-tmp/TCSTdemo/hfcst_work/results_hfcst/hyrank_restoredfastfix_v2,6,7,3793,3229,0.8513050355918798,85.13050355918797
+HyRANK Dioni -> Loukia,/root/autodl-tmp/TCSTdemo/hfcst_work/results_hfcst/hyrank_restoredfastfix_v2,7,8,2803,453,0.16161255797359972,16.16125579735997
+HyRANK Dioni -> Loukia,/root/autodl-tmp/TCSTdemo/hfcst_work/results_hfcst/hyrank_restoredfastfix_v2,8,9,404,359,0.8886138613861386,88.86138613861387
+HyRANK Dioni -> Loukia,/root/autodl-tmp/TCSTdemo/hfcst_work/results_hfcst/hyrank_restoredfastfix_v2,9,10,487,0,0.0,0.0
+HyRANK Dioni -> Loukia,/root/autodl-tmp/TCSTdemo/hfcst_work/results_hfcst/hyrank_restoredfastfix_v2,10,11,1393,1393,1.0,100.0
+HyRANK Dioni -> Loukia,/root/autodl-tmp/TCSTdemo/hfcst_work/results_hfcst/hyrank_restoredfastfix_v2,11,12,451,384,0.8514412416851441,85.14412416851441
+Shanghai -> Hangzhou,/root/autodl-tmp/TCSTdemo/hfcst_work/results_hfcst/shanghai_hangzhou_restoredfastfix_v2,0,1,18043,17193,0.9528903175746827,95.28903175746827
+Shanghai -> Hangzhou,/root/autodl-tmp/TCSTdemo/hfcst_work/results_hfcst/shanghai_hangzhou_restoredfastfix_v2,1,2,77450,69493,0.8972627501613945,89.72627501613944
+Shanghai -> Hangzhou,/root/autodl-tmp/TCSTdemo/hfcst_work/results_hfcst/shanghai_hangzhou_restoredfastfix_v2,2,3,40207,9900,0.24622578158032182,24.622578158032184

@@ -1,0 +1,68 @@
+
+========== houston13_to_houston18 ==========
+
+grid=8, blocks=64, class_block_coverage=[3, 4, 10, 3, 7, 13, 11]
+missing_classes: {'train': [], 'constraint': [1, 4], 'calibration': [], 'validation': []}
+类别分布于少于3个区块: []
+类别分布于少于4个区块: [1, 4]
+
+grid=10, blocks=100, class_block_coverage=[4, 5, 11, 4, 5, 10, 10]
+missing_classes: {'train': [4], 'constraint': [], 'calibration': [], 'validation': []}
+类别分布于少于3个区块: []
+类别分布于少于4个区块: []
+
+grid=12, blocks=144, class_block_coverage=[3, 6, 9, 1, 5, 15, 8]
+missing_classes: {'train': [4], 'constraint': [4], 'calibration': [], 'validation': [1, 4]}
+类别分布于少于3个区块: [4]
+类别分布于少于4个区块: [1, 4]
+
+grid=16, blocks=240, class_block_coverage=[3, 4, 9, 2, 5, 11, 15]
+missing_classes: {'train': [4], 'constraint': [], 'calibration': [2, 4, 5], 'validation': [1]}
+类别分布于少于3个区块: [4]
+类别分布于少于4个区块: [1, 4]
+
+========== hyrank_dioni_to_loukia ==========
+
+grid=8, blocks=64, class_block_coverage=[16, 2, 17, 3, 16, 3, 36, 35, 15, 4, 6, 5]
+missing_classes: {'train': [], 'constraint': [6], 'calibration': [2, 4, 10], 'validation': [2]}
+类别分布于少于3个区块: [2]
+类别分布于少于4个区块: [2, 4, 6]
+
+grid=10, blocks=100, class_block_coverage=[17, 2, 13, 4, 17, 4, 41, 38, 13, 3, 6, 5]
+missing_classes: {'train': [2, 10], 'constraint': [], 'calibration': [], 'validation': [2, 10]}
+类别分布于少于3个区块: [2]
+类别分布于少于4个区块: [2, 10]
+
+grid=12, blocks=144, class_block_coverage=[13, 2, 17, 4, 20, 4, 52, 48, 16, 4, 7, 6]
+missing_classes: {'train': [2], 'constraint': [10], 'calibration': [], 'validation': [2]}
+类别分布于少于3个区块: [2]
+类别分布于少于4个区块: [2]
+
+grid=16, blocks=256, class_block_coverage=[14, 2, 15, 7, 20, 6, 56, 56, 17, 4, 7, 6]
+missing_classes: {'train': [2, 10], 'constraint': [], 'calibration': [2], 'validation': [12]}
+类别分布于少于3个区块: [2]
+类别分布于少于4个区块: [2]
+
+========== shanghai_to_hangzhou ==========
+
+grid=8, blocks=64, class_block_coverage=[53, 60, 47]
+missing_classes: {'train': [], 'constraint': [], 'calibration': [], 'validation': []}
+类别分布于少于3个区块: []
+类别分布于少于4个区块: []
+
+grid=10, blocks=100, class_block_coverage=[81, 83, 64]
+missing_classes: {'train': [], 'constraint': [], 'calibration': [], 'validation': []}
+类别分布于少于3个区块: []
+类别分布于少于4个区块: []
+
+grid=12, blocks=144, class_block_coverage=[102, 108, 78]
+missing_classes: {'train': [], 'constraint': [], 'calibration': [], 'validation': []}
+类别分布于少于3个区块: []
+类别分布于少于4个区块: []
+
+grid=16, blocks=256, class_block_coverage=[169, 194, 119]
+missing_classes: {'train': [], 'constraint': [], 'calibration': [], 'validation': []}
+类别分布于少于3个区块: []
+类别分布于少于4个区块: []
+
+只读网格诊断完成，没有启动训练或修改配置。

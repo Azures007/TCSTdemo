@@ -1,0 +1,113 @@
+{
+  "task": "Houston13->Houston18",
+  "config": "/root/autodl-tmp/TCSTdemo/hfcst_work/configs_hfcst/houston_splitfix_20261025_113646.yaml",
+  "seed": 1237,
+  "device": "cuda:0",
+  "baseline_source_validation": {
+    "available": true,
+    "n": 386,
+    "nll": 1.5218753814697266,
+    "oa": 0.6088082790374756,
+    "aa": 0.6941113879105875,
+    "class_counts": {
+      "0": 72,
+      "1": 70,
+      "2": 30,
+      "3": 28,
+      "4": 32,
+      "5": 64,
+      "6": 90
+    }
+  },
+  "committed_cycles": 2,
+  "rollback_count": 0,
+  "adaptation_stopped_reason": null,
+  "target_metrics_final_only": {
+    "n": 53200,
+    "OA": 0.5486278195488722,
+    "AA": 0.4520150868159644,
+    "MacroF1": 0.28517419594335874,
+    "Kappa": 0.2603069096038795,
+    "confusion_matrix": [
+      [
+        10,
+        1,
+        142,
+        0,
+        17,
+        1146,
+        37
+      ],
+      [
+        3,
+        2,
+        1,
+        0,
+        6,
+        4490,
+        386
+      ],
+      [
+        21,
+        10,
+        454,
+        0,
+        98,
+        1777,
+        406
+      ],
+      [
+        0,
+        0,
+        0,
+        22,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        19,
+        5,
+        2676,
+        1000,
+        1647
+      ],
+      [
+        0,
+        0,
+        20,
+        639,
+        1830,
+        20560,
+        9410
+      ],
+      [
+        0,
+        0,
+        6,
+        43,
+        74,
+        779,
+        5463
+      ]
+    ],
+    "per_class_accuracy": [
+      0.007390983000739098,
+      0.0004091653027823241,
+      0.16413593637020968,
+      1.0,
+      0.5004675518982608,
+      0.633414461320435,
+      0.8582875098193244
+    ],
+    "gt_key": "map",
+    "gt_loaded_after_final_checkpoint": true,
+    "selection_used_target_gt": false
+  },
+  "target_gt_used_for_selection": false,
+  "final_checkpoint": "/root/autodl-tmp/TCSTdemo/hfcst_work/results_hfcst/houston_splitfix_20261025_113646_s1237/final.pt",
+  "data_audit": "/root/autodl-tmp/TCSTdemo/hfcst_work/results_hfcst/houston_splitfix_20261025_113646_s1237/data_audit.json",
+  "event_log": "/root/autodl-tmp/TCSTdemo/hfcst_work/results_hfcst/houston_splitfix_20261025_113646_s1237/events.jsonl"
+}

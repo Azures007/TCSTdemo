@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.log
+*.tar.gz
+*.zip
+*.rar
+results_*/
+results_ablation/
+results_final_three/
+core_backup_*/
+core_broken_*/
+*.pth
+*.pt
+*.pkl

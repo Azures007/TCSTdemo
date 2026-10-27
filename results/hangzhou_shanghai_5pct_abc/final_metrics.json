@@ -1,0 +1,434 @@
+{
+  "dataset": "hangzhou_shanghai",
+  "bands": 198,
+  "num_classes": 3,
+  "cycles": [
+    {
+      "cycle": 1,
+      "diag": {
+        "swd_before": 0.196246936917305,
+        "candidates": [
+          {
+            "eta": 1.0,
+            "V": 0.0,
+            "Vmax": 0.0,
+            "Rsem": 0.0,
+            "swd_before": 0.196246936917305,
+            "swd_after": 0.19594831764698029,
+            "swd_drop": 0.00029861927032470703,
+            "swd_drop_rel": 0.001521650605178821,
+            "Vc": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "phi_norm": 0.15849965810775757,
+            "spectral": {
+              "relative_spectral_change": 0.0012193843722343445,
+              "gain_min": 0.9977498650550842,
+              "gain_max": 1.0001565217971802,
+              "offset_min": -2.176121597585734e-05,
+              "offset_max": 1.2263776625331957e-05
+            },
+            "spectral_ok": true,
+            "spectral_reason": "ok"
+          },
+          {
+            "eta": 0.5,
+            "V": 0.0,
+            "Vmax": 0.0,
+            "Rsem": 0.0,
+            "swd_before": 0.196246936917305,
+            "swd_after": 0.19609758257865906,
+            "swd_drop": 0.00014935433864593506,
+            "swd_drop_rel": 0.0007610530945961737,
+            "Vc": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "phi_norm": 0.07924982905387878,
+            "spectral": {
+              "relative_spectral_change": 0.000609956681728363,
+              "gain_min": 0.9988741874694824,
+              "gain_max": 1.0000783205032349,
+              "offset_min": -1.088060798792867e-05,
+              "offset_max": 6.1318883126659784e-06
+            },
+            "spectral_ok": true,
+            "spectral_reason": "ok"
+          },
+          {
+            "eta": 0.25,
+            "V": 0.0,
+            "Vmax": 0.0,
+            "Rsem": 0.0,
+            "swd_before": 0.196246936917305,
+            "swd_after": 0.19617226719856262,
+            "swd_drop": 7.46697187423706e-05,
+            "swd_drop_rel": 0.00038048858196362633,
+            "Vc": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "phi_norm": 0.03962491452693939,
+            "spectral": {
+              "relative_spectral_change": 0.00030504423193633556,
+              "gain_min": 0.9994369149208069,
+              "gain_max": 1.0000391006469727,
+              "offset_min": -5.440303993964335e-06,
+              "offset_max": 3.0659441563329892e-06
+            },
+            "spectral_ok": true,
+            "spectral_reason": "ok"
+          },
+          {
+            "eta": 0.125,
+            "V": 0.0,
+            "Vmax": 0.0,
+            "Rsem": 0.0,
+            "swd_before": 0.196246936917305,
+            "swd_after": 0.1962096095085144,
+            "swd_drop": 3.732740879058838e-05,
+            "swd_drop_rel": 0.00019020632564735262,
+            "Vc": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "phi_norm": 0.019812457263469696,
+            "spectral": {
+              "relative_spectral_change": 0.00015252814046107233,
+              "gain_min": 0.9997183680534363,
+              "gain_max": 1.0000195503234863,
+              "offset_min": -2.7201519969821675e-06,
+              "offset_max": 1.5329720781664946e-06
+            },
+            "spectral_ok": true,
+            "spectral_reason": "ok"
+          },
+          {
+            "eta": 0.0625,
+            "V": 0.0,
+            "Vmax": 0.0,
+            "Rsem": 0.0,
+            "swd_before": 0.196246936917305,
+            "swd_after": 0.1962282657623291,
+            "swd_drop": 1.8671154975891113e-05,
+            "swd_drop_rel": 9.514112815813686e-05,
+            "Vc": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "phi_norm": 0.009906228631734848,
+            "spectral": {
+              "relative_spectral_change": 7.626636943314224e-05,
+              "gain_min": 0.9998592734336853,
+              "gain_max": 1.0000097751617432,
+              "offset_min": -1.3600759984910837e-06,
+              "offset_max": 7.664860390832473e-07
+            },
+            "spectral_ok": true,
+            "spectral_reason": "ok"
+          },
+          {
+            "eta": 0.03125,
+            "V": 0.0,
+            "Vmax": 0.0,
+            "Rsem": 0.0,
+            "swd_before": 0.196246936917305,
+            "swd_after": 0.19623760879039764,
+            "swd_drop": 9.328126907348633e-06,
+            "swd_drop_rel": 4.753259874460788e-05,
+            "Vc": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "phi_norm": 0.004953114315867424,
+            "spectral": {
+              "relative_spectral_change": 3.81270692741964e-05,
+              "gain_min": 0.999929666519165,
+              "gain_max": 1.0000048875808716,
+              "offset_min": -6.800379992455419e-07,
+              "offset_max": 3.8324301954162365e-07
+            },
+            "spectral_ok": true,
+            "spectral_reason": "ok"
+          }
+        ],
+        "cal_class_counts": [
+          12.0,
+          12.0,
+          12.0
+        ],
+        "accepted_candidate": null,
+        "best_rejected": {
+          "eta": 1.0,
+          "V": 0.0,
+          "Vmax": 0.0,
+          "Rsem": 0.0,
+          "swd_before": 0.196246936917305,
+          "swd_after": 0.19594831764698029,
+          "swd_drop": 0.00029861927032470703,
+          "swd_drop_rel": 0.001521650605178821,
+          "Vc": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "phi_norm": 0.15849965810775757,
+          "spectral": {
+            "relative_spectral_change": 0.0012193843722343445,
+            "gain_min": 0.9977498650550842,
+            "gain_max": 1.0001565217971802,
+            "offset_min": -2.176121597585734e-05,
+            "offset_max": 1.2263776625331957e-05
+          },
+          "spectral_ok": true,
+          "spectral_reason": "ok"
+        },
+        "accepted_eta": 0.0
+      },
+      "best_src_val": 89.76190476190476,
+      "class_risk_weights": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "cycle": 2,
+      "diag": {
+        "swd_before": 0.2026728093624115,
+        "candidates": [
+          {
+            "eta": 1.0,
+            "V": 0.0,
+            "Vmax": 0.0,
+            "Rsem": 0.0,
+            "swd_before": 0.2026728093624115,
+            "swd_after": 0.2022533416748047,
+            "swd_drop": 0.0004194676876068115,
+            "swd_drop_rel": 0.0020696791490008707,
+            "Vc": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "phi_norm": 0.1776411533355713,
+            "spectral": {
+              "relative_spectral_change": 0.0014998074620962143,
+              "gain_min": 0.9974445700645447,
+              "gain_max": 0.9997671246528625,
+              "offset_min": -0.0001199117541546002,
+              "offset_max": 7.211482443381101e-05
+            },
+            "spectral_ok": true,
+            "spectral_reason": "ok"
+          },
+          {
+            "eta": 0.5,
+            "V": 0.0,
+            "Vmax": 0.0,
+            "Rsem": 0.0,
+            "swd_before": 0.2026728093624115,
+            "swd_after": 0.202462837100029,
+            "swd_drop": 0.00020997226238250732,
+            "swd_drop_rel": 0.001036015946308038,
+            "Vc": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "phi_norm": 0.08882057666778564,
+            "spectral": {
+              "relative_spectral_change": 0.0007502122316509485,
+              "gain_min": 0.9987212419509888,
+              "gain_max": 0.9998835325241089,
+              "offset_min": -5.9955898905172944e-05,
+              "offset_max": 3.605741585488431e-05
+            },
+            "spectral_ok": true,
+            "spectral_reason": "ok"
+          },
+          {
+            "eta": 0.25,
+            "V": 0.0,
+            "Vmax": 0.0,
+            "Rsem": 0.0,
+            "swd_before": 0.2026728093624115,
+            "swd_after": 0.20256781578063965,
+            "swd_drop": 0.00010499358177185059,
+            "swd_drop_rel": 0.0005180447347730066,
+            "Vc": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "phi_norm": 0.04441028833389282,
+            "spectral": {
+              "relative_spectral_change": 0.00037518367753364146,
+              "gain_min": 0.9993604421615601,
+              "gain_max": 0.9999417662620544,
+              "offset_min": -2.997795309056528e-05,
+              "offset_max": 1.8028707927442156e-05
+            },
+            "spectral_ok": true,
+            "spectral_reason": "ok"
+          },
+          {
+            "eta": 0.125,
+            "V": 0.0,
+            "Vmax": 0.0,
+            "Rsem": 0.0,
+            "swd_before": 0.2026728093624115,
+            "swd_after": 0.20262031257152557,
+            "swd_drop": 5.249679088592529e-05,
+            "swd_drop_rel": 0.0002590223673865033,
+            "Vc": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "phi_norm": 0.02220514416694641,
+            "spectral": {
+              "relative_spectral_change": 0.00018758777878247201,
+              "gain_min": 0.9996801614761353,
+              "gain_max": 0.9999708533287048,
+              "offset_min": -1.498897654528264e-05,
+              "offset_max": 9.014353963721078e-06
+            },
+            "spectral_ok": true,
+            "spectral_reason": "ok"
+          },
+          {
+            "eta": 0.0625,
+            "V": 0.0,
+            "Vmax": 0.0,
+            "Rsem": 0.0,
+            "swd_before": 0.2026728093624115,
+            "swd_after": 0.20264656841754913,
+            "swd_drop": 2.6240944862365723e-05,
+            "swd_drop_rel": 0.00012947442207426405,
+            "Vc": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "phi_norm": 0.011102572083473206,
+            "spectral": {
+              "relative_spectral_change": 9.380614210385829e-05,
+              "gain_min": 0.9998400807380676,
+              "gain_max": 0.9999855160713196,
+              "offset_min": -7.49448827264132e-06,
+              "offset_max": 4.507176981860539e-06
+            },
+            "spectral_ok": true,
+            "spectral_reason": "ok"
+          },
+          {
+            "eta": 0.03125,
+            "V": 0.0,
+            "Vmax": 0.0,
+            "Rsem": 0.0,
+            "swd_before": 0.2026728093624115,
+            "swd_after": 0.20265968143939972,
+            "swd_drop": 1.3127923011779785e-05,
+            "swd_drop_rel": 6.477397265611961e-05,
+            "Vc": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "phi_norm": 0.005551286041736603,
+            "spectral": {
+              "relative_spectral_change": 4.689043271355331e-05,
+              "gain_min": 0.9999200701713562,
+              "gain_max": 0.9999927878379822,
+              "offset_min": -3.74724413632066e-06,
+              "offset_max": 2.2535884909302695e-06
+            },
+            "spectral_ok": true,
+            "spectral_reason": "ok"
+          }
+        ],
+        "cal_class_counts": [
+          12.0,
+          12.0,
+          12.0
+        ],
+        "accepted_candidate": null,
+        "best_rejected": {
+          "eta": 1.0,
+          "V": 0.0,
+          "Vmax": 0.0,
+          "Rsem": 0.0,
+          "swd_before": 0.2026728093624115,
+          "swd_after": 0.2022533416748047,
+          "swd_drop": 0.0004194676876068115,
+          "swd_drop_rel": 0.0020696791490008707,
+          "Vc": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "phi_norm": 0.1776411533355713,
+          "spectral": {
+            "relative_spectral_change": 0.0014998074620962143,
+            "gain_min": 0.9974445700645447,
+            "gain_max": 0.9997671246528625,
+            "offset_min": -0.0001199117541546002,
+            "offset_max": 7.211482443381101e-05
+          },
+          "spectral_ok": true,
+          "spectral_reason": "ok"
+        },
+        "accepted_eta": 0.0
+      },
+      "best_src_val": 93.33333333333333,
+      "class_risk_weights": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    }
+  ],
+  "best_src_val": 93.33333333333333,
+  "source_split": {
+    "train": 600,
+    "constraint": 36,
+    "cal_pool": 180,
+    "val": 420
+  },
+  "target_metrics": {
+    "OA": 71.29728260869565,
+    "AA": 77.73658817001736,
+    "Kappa": 0.5891475685082257,
+    "MacroF1": 71.45585908923077,
+    "class_accuracy": [
+      93.86385971751825,
+      39.345904792533815,
+      100.0
+    ],
+    "confusion_matrix": [
+      [
+        115568,
+        7481,
+        74
+      ],
+      [
+        130,
+        63618,
+        97941
+      ],
+      [
+        0,
+        0,
+        83188
+      ]
+    ]
+  }
+}

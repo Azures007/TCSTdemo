@@ -1,0 +1,49 @@
+dataset:
+  name: houston
+  source_name: Houston13
+  target_name: Houston18
+  source_image: /root/autodl-tmp/v7.0/PTMDA-Net_v7_reopt/Datasets/Houston/Houston13.mat
+  source_gt: /root/autodl-tmp/v7.0/PTMDA-Net_v7_reopt/Datasets/Houston/Houston13_7gt.mat
+  target_image: /root/autodl-tmp/v7.0/PTMDA-Net_v7_reopt/Datasets/Houston/Houston18.mat
+  target_gt: /root/autodl-tmp/v7.0/PTMDA-Net_v7_reopt/Datasets/Houston/Houston18_7gt.mat
+  num_classes: 7
+  expected_bands:
+    source: null
+    target: null
+  band_stride_source: 1
+training:
+  patch_size: 11
+  batch_size: 64
+  epochs_warmup: 15
+  epochs_per_cycle: 5
+  num_cycles: 2
+  lr: 0.0003
+  weight_decay: 0.0004
+  num_workers: 4
+  amp: true
+  target_pool_size: 4000
+  run_mode: warmup_only
+tcst:
+  K: 8
+  rho_a: 0.15
+  rho_b: 0.15
+  rho_m: 0.05
+  lambda_d: 1.0
+  lambda_xi: 10.0
+  lambda_safe: 0.3
+  per_class_constraint_samples: 12
+  top_competitors: 2
+  eta_candidates:
+  - 0.25
+  - 0.125
+  - 0.0625
+  - 0.03125
+  tau_sem: 0.5
+  tau_flip: 0.05
+  tau_class_flip: 0.2
+  tau_swd_min_drop: 1e-5
+  tau_target_flip: 0.15
+  phi_max_norm: 0.5
+output:
+  save_dir: /root/autodl-tmp/TCSTdemo/results/houston_warmup
+  seed: 1237

@@ -1,0 +1,36 @@
+{
+  "results_root": "/root/autodl-tmp/TCSTdemo/hfcst_work/results_hfcst",
+  "created_at": "20261025_140116",
+  "tasks": {
+    "houston": {
+      "status": "complete",
+      "source_run": "/root/autodl-tmp/TCSTdemo/hfcst_work/results_hfcst/houston_splitfix_20261025_113646_s1237",
+      "copied": [
+        "data_audit.json",
+        "events.jsonl",
+        "results.json"
+      ],
+      "missing": []
+    },
+    "hyrank": {
+      "status": "complete",
+      "source_run": "/root/autodl-tmp/TCSTdemo/hfcst_work/results_hfcst/hyrank_restoredfastfix_v2",
+      "copied": [
+        "data_audit.json",
+        "events.jsonl",
+        "results.json"
+      ],
+      "missing": []
+    },
+    "shanghai_hangzhou": {
+      "status": "complete",
+      "source_run": "/root/autodl-tmp/TCSTdemo/hfcst_work/results_hfcst/shanghai_hangzhou_restoredfastfix_v2",
+      "copied": [
+        "data_audit.json",
+        "events.jsonl",
+        "results.json"
+      ],
+      "missing": []
+    }
+  }
+}

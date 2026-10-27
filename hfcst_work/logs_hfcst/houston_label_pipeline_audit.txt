@@ -1,0 +1,247 @@
+========== 1. GT 加载与标签转换 ==========
+26-        if k in d and isinstance(d[k], np.ndarray) and d[k].ndim == 3:
+27-            return np.asarray(d[k]), k
+28-    for k, v in d.items():
+29-        if isinstance(v, np.ndarray) and v.ndim == 3:
+30-            return np.asarray(v), k
+31-    raise KeyError(f"No 3-D hyperspectral cube found; keys={list(d.keys())}")
+32-
+33-
+34:def _pick_2d(d):
+35-    for k in GT_KEYS:
+36-        if k in d and isinstance(d[k], np.ndarray) and d[k].ndim == 2:
+37-            return np.asarray(d[k]), k
+38-    for k, v in d.items():
+39-        if isinstance(v, np.ndarray) and v.ndim == 2:
+40-            return np.asarray(v), k
+41-    raise KeyError(f"No 2-D ground-truth array found; keys={list(d.keys())}")
+42-
+43-
+44-def _band_axis(shape, expected_bands=None):
+45-    if expected_bands is not None and expected_bands in shape:
+46-        return int(list(shape).index(expected_bands))
+47-    candidates = [i for i, s in enumerate(shape) if 3 <= s <= 2048]
+48-    # Prefer the spectral axis conventionally (usually the smallest dimension),
+49-    # but refuse ambiguous dimensions rather than silently sampling bands.
+50-    if not candidates:
+51-        raise ValueError(f"Cannot infer spectral axis from shape {shape}")
+52-    smallest = min(shape[i] for i in candidates)
+53-    winners = [i for i in candidates if shape[i] == smallest]
+54-    if len(winners) != 1:
+55-        raise ValueError(f"Ambiguous spectral axis for shape {shape}; set expected_bands")
+56-    return winners[0]
+57-
+58-
+59:def load_cube(image_path, expected_bands=None, verbose=True):
+60-    """Load image only. Does not open or inspect a GT file."""
+61-    d = _load_mat(image_path)
+62-    cube, key = _pick_3d(d)
+63-    axis = _band_axis(cube.shape, expected_bands)
+64-    cube = np.moveaxis(cube, axis, -1).astype(np.float32, copy=False)
+65-    finite_values = np.isfinite(cube)
+66-    valid = finite_values.all(axis=-1) & (np.linalg.norm(np.nan_to_num(cube), axis=-1) > 1e-12)
+67-    bad_scalar_count = int((~finite_values).sum())
+68-    cube = np.nan_to_num(cube, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
+69-    cube[~valid] = 0.0
+70-    audit = {"path": str(image_path), "mat_key": key, "shape_hwb": list(cube.shape),
+71-             "band_axis_original": int(axis), "bands": int(cube.shape[-1]),
+72-             "nonfinite_scalar_count": bad_scalar_count,
+73-             "invalid_pixel_count": int((~valid).sum()), "valid_pixel_count": int(valid.sum())}
+74-    if verbose:
+75-        print(f"[data] loaded {Path(image_path).name} key={key} shape={cube.shape} "
+76-              f"bands={cube.shape[-1]} invalid={audit['invalid_pixel_count']}", flush=True)
+77-    return cube, valid, audit
+78-
+79-
+80:def load_gt(gt_path, expected_shape=None):
+81-    d = _load_mat(gt_path)
+82-    gt, key = _pick_2d(d)
+83-    gt = np.asarray(gt, dtype=np.int64)
+84-    if expected_shape is not None and tuple(gt.shape) != tuple(expected_shape):
+85-        raise ValueError(f"GT shape {gt.shape} does not match image shape {expected_shape}")
+86-    return gt, key
+87-
+88-
+89-def align_cubes(source, target, band_mapping=None):
+90-    """Align only equal band counts or an explicit source/target index mapping."""
+91-    bs, bt = source.shape[-1], target.shape[-1]
+92-    if bs == bt and band_mapping is None:
+93-        return source, target, {"mode": "identity", "bands": bs}
+94-    if not band_mapping:
+95-        raise ValueError(
+96-            f"Band mismatch (source={bs}, target={bt}) without an explicit band_mapping. "
+97-            "Uniform index resampling is intentionally disabled because physical band correspondence is unknown.")
+98-    si = band_mapping.get("source_indices")
+99-    ti = band_mapping.get("target_indices")
+100-    if not isinstance(si, list) or not isinstance(ti, list) or len(si) != len(ti) or not si:
+101-        raise ValueError("band_mapping must contain equally sized non-empty source_indices and target_indices lists")
+102-    si, ti = np.asarray(si, dtype=int), np.asarray(ti, dtype=int)
+103-    if (si < 0).any() or (si >= bs).any() or (ti < 0).any() or (ti >= bt).any():
+104-        raise ValueError("band_mapping index outside source/target range")
+105-    return source[..., si], target[..., ti], {"mode": "explicit_indices", "bands": int(len(si)),
+106-                                              "source_indices": si.tolist(), "target_indices": ti.tolist()}
+107-
+108-
+109-def robust_source_scale(cube, train_coords, quantile=0.95):
+110-    if len(train_coords) == 0:
+111-        raise ValueError("Cannot estimate shared scale: source spatial training split is empty")
+112-    vals = np.abs(cube[train_coords[:, 0], train_coords[:, 1], :]).reshape(-1)
+113-    vals = vals[np.isfinite(vals)]
+114-    if vals.size == 0:
+115-        raise ValueError("Cannot estimate shared scale from non-finite source training values")
+116-    scale = float(np.quantile(vals, float(quantile)))
+117-    return max(scale, 1e-8), {"quantile": float(quantile), "scale": max(scale, 1e-8),
+118-                             "n_source_train_values": int(vals.size)}
+119-
+120-
+121-def _block_bounds(H, W, patch_size, grid_size):
+122-    bh = max(int(patch_size), int(math.ceil(H / max(1, grid_size))))
+123-    bw = max(int(patch_size), int(math.ceil(W / max(1, grid_size))))
+124-    blocks = []
+125-    bid = 0
+126-    for r0 in range(0, H, bh):
+127-        for c0 in range(0, W, bw):
+128-            blocks.append((bid, r0, min(H, r0 + bh), c0, min(W, c0 + bw)))
+129-            bid += 1
+130-    return blocks
+131-
+132-
+133-def _assign_source_blocks(blocks, gt, num_classes, ratios, rng):
+134-    # Greedy global block assignment uses class histograms only to balance splits;
+135-    # a block is never split by class, so cross-split patch support cannot overlap.
+136-    split_names = list(ratios)
+137-    hist = []
+138-    for _, r0, r1, c0, c1 in blocks:
+139-        labels = gt[r0:r1, c0:c1]
+140-        h = np.bincount(labels[(labels > 0) & (labels <= num_classes)], minlength=num_classes + 1)[1:]
+141-        hist.append(h.astype(float))
+142-    hist = np.asarray(hist) if hist else np.zeros((0, num_classes))
+143-    nblocks = len(blocks)
+144-    desired_blocks = {s: ratios[s] * nblocks for s in split_names}
+145-    desired_class = {s: hist.sum(axis=0) * ratios[s] for s in split_names}
+
+========== 2. 全项目标签转换位置 ==========
+core/data_hfcst.py:80:def load_gt(gt_path, expected_shape=None):
+core/task_geometry_hfcst.py:61:    y = torch.as_tensor(labels, dtype=torch.long, device=device).reshape(-1)
+core/trainer_hfcst.py:17:from core.data_hfcst import (load_cube, load_gt, align_cubes, robust_source_scale,
+core/trainer_hfcst.py:64:    return gt[coords[:, 0], coords[:, 1]].astype(np.int64) - 1
+core/trainer_hfcst.py:668:    src_gt, src_gt_key = load_gt(src_gt_path, expected_shape=src_cube.shape[:2])
+core/trainer_hfcst.py:688:                or checkpoint_bands != int(tgt_cube.shape[-1])):
+core/trainer_hfcst.py:691:                f"source/target have {src_cube.shape[-1]}/{tgt_cube.shape[-1]}"
+core/trainer_hfcst.py:973:        target_gt, target_gt_key = load_gt(target_gt_path, expected_shape=tgt_cube.shape[:2])
+core/trainer_v8.py:480:def _load_gt_map(gt_path):
+core/trainer_v8.py:561:        return c, (src_gt[c[:, 0], c[:, 1]] - 1).astype(np.int64)
+core/trainer_v8.py:567:    mode_label = "100%-protocol" if train_ratio >= 1.0 - 1e-6 else f"{train_ratio*100:.0f}%-protocol"
+core/trainer_v8.py:587:    tgt_energy = np.linalg.norm(tgt_cube, axis=-1)
+core/trainer_v8.py:1192:    tgt_gt = _load_gt_map(cfg["dataset"]["target_gt"])
+core/trainer_v8.py:1193:    tgt_valid = np.linalg.norm(tgt_cube, axis=-1) > 0
+core/trainer_v8.py:1195:    tgt_eval_y = (tgt_gt[tgt_eval_c[:, 0], tgt_eval_c[:, 1]] - 1).astype(np.int64)
+scripts/config_ensemble_houston.py:62:    tgt_valid = np.linalg.norm(tgt_cube, axis=-1) > 0
+scripts/config_ensemble_houston.py:64:    tgt_eval_y = (tgt_gt[tgt_eval_c[:, 0], tgt_eval_c[:, 1]] - 1).astype(np.int64)
+
+========== 3. Houston 当前配置 ==========
+dataset:
+  name: houston13_to_houston18
+  source_name: Houston13
+  target_name: Houston18
+  source_image: ${DATA_ROOT}/Houston/Houston13.mat
+  source_gt: ${DATA_ROOT}/Houston/Houston13_7gt.mat
+  target_image: ${DATA_ROOT}/Houston/Houston18.mat
+  target_gt: ${DATA_ROOT}/Houston/Houston18_7gt.mat
+  num_classes: 7
+  expected_bands:
+    source: null
+    target: null
+  band_mapping: null
+training:
+  seed: 1237
+  patch_size: 11
+  spatial_grid_size: 8
+  batch_size: 16
+  epochs_warmup: 80
+  epochs_per_cycle: 1
+  lr: 3.0e-05
+  weight_decay: 0.0004
+  lr_scheduler: cosine
+  feature_dim: 64
+  max_gate: 0.5
+  label_smoothing: 0.03
+  lambda_context: 0.5
+  lambda_spectral: 0.5
+  ema_decay: 0.99
+  grad_clip: 5.0
+  scale_quantile: 0.95
+  per_class_train_cap: 150
+  per_class_constraint_cap: 12
+  per_class_calibration_cap: 80
+  per_class_validation_cap: 150
+  target_estimate_ratio: 0.7
+  target_pool_size: 512
+  target_validation_pool_size: 384
+  lambda_transport: 0.1
+  class_balanced_sampling: true
+  block_split_overrides:
+  - block: 12
+    from: constraint
+    to: train
+  - block: 53
+    from: calibration
+    to: train
+  - block: 28
+    from: train
+    to: calibration
+hfcst:
+  K: 8
+  rho_a: 0.1
+  rho_b: 0.1
+  rho_m: 0.05
+  lambda_d: 0.01
+  lambda_spec: 1.0
+  lambda_feat: 1.0
+  lambda_residual: 0.01
+  min_effective_target_n: 8.0
+  min_source_per_class: 4
+  transport_source_per_class: 24
+  per_class_constraint_samples: 12
+  stable_fraction: 0.25
+  shared_trust_radius: 0.03
+  residual_trust_radius: 0.01
+  min_direction_norm: 1.0e-07
+  enable_class_residuals: false
+  num_cycles: 2
+  epochs_per_cycle: 1
+  eta_candidates:
+  - 1.0
+  - 0.5
+  - 0.25
+  - 0.125
+  - 0.0625
+  teacher_temperature: 1.0
+  spectral_perturb_std: 0.01
+  bootstrap_replicates: 200
+  bootstrap_confidence: 0.9
+  minimum_bootstrap_replicates: 5
+  minimum_transport_improvement: 1.0e-05
+  minimum_relative_improvement: 0.0001
+  max_new_error_rate: 0.02
+  max_class_new_error_rate: 0.1
+  max_margin_loss: 0.2
+  margin_tolerance: 0.05
+  max_target_pseudo_flip_rate: 0.25
+  min_block_view_agreement: 0.4
+  max_block_target_flip_rate: 0.35
+  gain_max_deviation: 0.15
+  offset_max_abs: 0.15
+  gain_tv_max: 0.36
+  offset_tv_max: 0.18
+  relative_change_max: 0.15
+  post_transport_tolerance: 0.02
+output:
+  seed: 1237
+  save_dir: results_hfcst/houston_metricfix_20261025_111525_s1237
+
+========== 4. 最终模型的验收事件 ==========
+{"event": "baseline_saved", "stage": "source_only_baseline", "initialized_from_checkpoint": null, "source_validation": {"available": true, "n": 467, "nll": 1.0268052816390991, "oa": 0.6895074844360352, "aa": 0.6434763504990509, "class_counts": {"0": 35, "1": 70, "2": 35, "3": 150, "4": 32, "5": 55, "6": 90}}, "warmup_epochs": 80, "config_path": "/root/autodl-tmp/TCSTdemo/hfcst_work/configs_hfcst/houston_metricfix_20261025_111525.yaml", "seed": 1237, "shared_source_scale": 0.19790442287921906, "patch_size": 11, "band_alignment": {"mode": "identity", "bands": 48}, "source_scale_quantile": 0.95}
+{"event": "posterior_acceptance", "cycle": 0, "accepted": false, "reasons": ["post_training_transport_noninferiority_failed", "post_training_bootstrap_transport_degradation", "post_training_source_error_budget_exceeded", "post_training_class_error_budget_exceeded"], "pre_transport_score": 1.0190043449401855, "post_transport_score": 1.0553184747695923, "post_transport_bootstrap_differences": [-0.03470301628112793, -0.037769317626953125, -0.04159343242645264, -0.04095196723937988, -0.033114075660705566, -0.04070407152175903, -0.0378875732421875, -0.029227256774902344, -0.029117822647094727, -0.0338057279586792, -0.03130394220352173, -0.03620457649230957, -0.04373764991760254, -0.030608177185058594, -0.04269278049468994, -0.03535890579223633, -0.038785576820373535, -0.04663240909576416, -0.04032754898071289, -0.03166508674621582, -0.03544747829437256, -0.03179866075515747, -0.03941065073013306, -0.036895036697387695, -0.04040253162384033, -0.031256675720214844, -0.033566951751708984, -0.030952811241149902, -0.04302012920379639, -0.04497647285461426, -0.030782580375671387, -0.04127371311187744, -0.03622502088546753, -0.0354994535446167, -0.028916001319885254, -0.03450131416320801, -0.04010307788848877, -0.03720283508300781, -0.03264009952545166, -0.03615975379943848, -0.03888595104217529, -0.03562051057815552, -0.03338289260864258, -0.030686378479003906, -0.04110538959503174, -0.03168731927871704, -0.03952205181121826, -0.0444105863571167, -0.04833412170410156, -0.03947925567626953, -0.04143989086151123, -0.04139518737792969, -0.03105461597442627, -0.03841817378997803, -0.035364627838134766, -0.036928772926330566, -0.03554588556289673, -0.03473997116088867, -0.034863054752349854, -0.03492414951324463, -0.04074668884277344, -0.04276704788208008, -0.03904294967651367, -0.041587233543395996, -0.03804260492324829, -0.03720337152481079, -0.03855651617050171, -0.051873087882995605, -0.03308755159378052, -0.041916847229003906, -0.045285582542419434, -0.035247206687927246, -0.030269384384155273, -0.038072288036346436, -0.03313636779785156, -0.03556478023529053, -0.04175233840942383, -0.03343546390533447, -0.035196781158447266, -0.024803519248962402, -0.03016805648803711, -0.03870093822479248, -0.03451257944107056, -0.03223496675491333, -0.031421780586242676, -0.02503126859664917, -0.03592383861541748, -0.041715025901794434, -0.041057467460632324, -0.04864466190338135, -0.05340421199798584, -0.0355830192565918, -0.05035817623138428, -0.023687243461608887, -0.04339885711669922, -0.039310336112976074, -0.04650163650512695, -0.03885948657989502, -0.041742563247680664, -0.04632771015167236, -0.029127001762390137, -0.03654402494430542, -0.035967111587524414, -0.042582154273986816, -0.026504814624786377, -0.04531896114349365, -0.04256391525268555, -0.042316317558288574, -0.04315900802612305, -0.05082893371582031, -0.0418781042098999, -0.029367566108703613, -0.027051150798797607, -0.0316462516784668, -0.0399402379989624, -0.03823208808898926, -0.03985404968261719, -0.03204089403152466, -0.03888505697250366, -0.0370711088180542, -0.033467769622802734, -0.04606330394744873, -0.03417611122131348, -0.031133174896240234, -0.04512512683868408, -0.036688804626464844, -0.028400897979736328, -0.03621530532836914, -0.03667116165161133, -0.029553532600402832, -0.0451812744140625, -0.028472900390625, -0.042336225509643555, -0.03586530685424805, -0.029416322708129883, -0.030382513999938965, -0.04496479034423828, -0.03205609321594238, -0.03632718324661255, -0.03576767444610596, -0.029865145683288574, -0.028125405311584473, -0.0398707389831543, -0.031723976135253906, -0.02403545379638672, -0.04445171356201172, -0.0313190221786499, -0.03335857391357422, -0.03892087936401367, -0.02722907066345215, -0.02433907985687256, -0.03619319200515747, -0.035047054290771484, -0.03587019443511963, -0.023166418075561523, -0.028989434242248535, -0.026154041290283203, -0.03770560026168823, -0.030025839805603027, -0.03702831268310547, -0.04443061351776123, -0.04405093193054199, -0.02998042106628418, -0.0408862829208374, -0.03256726264953613, -0.03826594352722168, -0.03881406784057617, -0.042397499084472656, -0.024752378463745117, -0.024817466735839844, -0.03081226348876953, -0.035565972328186035, -0.0400547981262207, -0.04304671287536621, -0.0382152795791626, -0.03161430358886719, -0.026227235794067383, -0.027960777282714844, -0.031568169593811035, -0.041026949882507324, -0.029781818389892578, -0.04228568077087402, -0.028659582138061523, -0.02857530117034912, -0.038202524185180664, -0.03744339942932129, -0.03467369079589844, -0.04133307933807373, -0.024960696697235107, -0.05382668972015381, -0.03477132320404053, -0.024214088916778564, -0.03506636619567871, -0.03656172752380371, -0.03701227903366089, -0.033234238624572754, -0.027646541595458984, -0.03213000297546387, -0.036544084548950195, -0.05230510234832764], "post_transport_bootstrap_ci_low": -0.04441258907318115, "post_transport_diag": {"per_class": {"0": {"d_spec": 0.5890509486198425, "d_feat": 0.83882075548172, "effective_target_n": 313.5966491699219, "source_n": 24}, "1": {"d_spec": 0.4589322805404663, "d_feat": 0.932306170463562, "effective_target_n": 245.5103302001953, "source_n": 24}, "2": {"d_spec": 0.5420641899108887, "d_feat": 0.8597947359085083, "effective_target_n": 312.7164001464844, "source_n": 24}, "3": {"d_spec": 0.44038593769073486, "d_feat": 0.865239143371582, "effective_target_n": 299.7581787109375, "source_n": 24}, "4": {"d_spec": 0.4113762378692627, "d_feat": 0.4161926507949829, "effective_target_n": 133.86595153808594, "source_n": 24}, "5": {"d_spec": 0.3174140453338623, "d_feat": 0.035138845443725586, "effective_target_n": 210.56996154785156, "source_n": 24}, "6": {"d_spec": 0.3956880569458008, "d_feat": 0.28482532501220703, "effective_target_n": 206.14447021484375, "source_n": 24}}, "effective_target_n": {"0": 313.5966491699219, "1": 245.5103302001953, "2": 312.7164001464844, "3": 299.7581787109375, "4": 133.86595153808594, "5": 210.56996154785156, "6": 206.14447021484375}, "valid_classes": [0, 1, 2, 3, 4, 5, 6], "n_valid_classes": 7}, "post_source_risk": {"available": true, "new_error_rate": 0.025735294446349144, "worst_class_new_error": 0.12, "per_class_new_error": {"0": 0.0, "1": 0.05555555555555555, "2": 0.12, "3": null, "4": 0.0, "5": 0.0, "6": 0.0}, "margin_loss": 0.0645076110959053, "accuracy_before": 0.4742647111415863, "accuracy_after": 0.4632352888584137}, "spectral_diag": {"gain_min": 0.9999997019767761, "gain_max": 1.000000238418579, "offset_min": -0.0004968115244992077, "offset_max": 0.0011246291687712073, "gain_tv": 1.2516975402832031e-06, "offset_tv": 0.004037265200167894, "relative_spectral_change": 0.0007888733525760472, "shared_norm": 0.030000001192092896, "residual_norms": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]}, "spectral_reasons": [], "target_pseudo_flip_rate": 0.11458333333333333, "target_block_flip_rates": {"available": true, "max_block_flip_rate": 0.34782608695652173, "per_block": {"5": 0.0625, "7": 0.0, "9": 0.125, "17": 0.10526315789473684, "18": 0.23809523809523808, "20": 0.0, "21": 0.045454545454545456, "25": 0.08695652173913043, "26": 0.16666666666666666, "28": 0.0, "29": 0.15384615384615385, "31": 0.2, "33": 0.038461538461538464, "36": 0.34782608695652173, "43": 0.18181818181818182, "47": 0.041666666666666664, "59": 0.07692307692307693, "61": 0.0, "63": 0.14285714285714285}}}
+{"event": "transaction_rollback", "cycle": 0, "rollback_count": 1, "restored_model_optimizer_teacher_transform_scheduler": true, "posterior": {"accepted": false, "reasons": ["post_training_transport_noninferiority_failed", "post_training_bootstrap_transport_degradation", "post_training_source_error_budget_exceeded", "post_training_class_error_budget_exceeded"], "pre_transport_score": 1.0190043449401855, "post_transport_score": 1.0553184747695923, "post_transport_bootstrap_differences": [-0.03470301628112793, -0.037769317626953125, -0.04159343242645264, -0.04095196723937988, -0.033114075660705566, -0.04070407152175903, -0.0378875732421875, -0.029227256774902344, -0.029117822647094727, -0.0338057279586792, -0.03130394220352173, -0.03620457649230957, -0.04373764991760254, -0.030608177185058594, -0.04269278049468994, -0.03535890579223633, -0.038785576820373535, -0.04663240909576416, -0.04032754898071289, -0.03166508674621582, -0.03544747829437256, -0.03179866075515747, -0.03941065073013306, -0.036895036697387695, -0.04040253162384033, -0.031256675720214844, -0.033566951751708984, -0.030952811241149902, -0.04302012920379639, -0.04497647285461426, -0.030782580375671387, -0.04127371311187744, -0.03622502088546753, -0.0354994535446167, -0.028916001319885254, -0.03450131416320801, -0.04010307788848877, -0.03720283508300781, -0.03264009952545166, -0.03615975379943848, -0.03888595104217529, -0.03562051057815552, -0.03338289260864258, -0.030686378479003906, -0.04110538959503174, -0.03168731927871704, -0.03952205181121826, -0.0444105863571167, -0.04833412170410156, -0.03947925567626953, -0.04143989086151123, -0.04139518737792969, -0.03105461597442627, -0.03841817378997803, -0.035364627838134766, -0.036928772926330566, -0.03554588556289673, -0.03473997116088867, -0.034863054752349854, -0.03492414951324463, -0.04074668884277344, -0.04276704788208008, -0.03904294967651367, -0.041587233543395996, -0.03804260492324829, -0.03720337152481079, -0.03855651617050171, -0.051873087882995605, -0.03308755159378052, -0.041916847229003906, -0.045285582542419434, -0.035247206687927246, -0.030269384384155273, -0.038072288036346436, -0.03313636779785156, -0.03556478023529053, -0.04175233840942383, -0.03343546390533447, -0.035196781158447266, -0.024803519248962402, -0.03016805648803711, -0.03870093822479248, -0.03451257944107056, -0.03223496675491333, -0.031421780586242676, -0.02503126859664917, -0.03592383861541748, -0.041715025901794434, -0.041057467460632324, -0.04864466190338135, -0.05340421199798584, -0.0355830192565918, -0.05035817623138428, -0.023687243461608887, -0.04339885711669922, -0.039310336112976074, -0.04650163650512695, -0.03885948657989502, -0.041742563247680664, -0.04632771015167236, -0.029127001762390137, -0.03654402494430542, -0.035967111587524414, -0.042582154273986816, -0.026504814624786377, -0.04531896114349365, -0.04256391525268555, -0.042316317558288574, -0.04315900802612305, -0.05082893371582031, -0.0418781042098999, -0.029367566108703613, -0.027051150798797607, -0.0316462516784668, -0.0399402379989624, -0.03823208808898926, -0.03985404968261719, -0.03204089403152466, -0.03888505697250366, -0.0370711088180542, -0.033467769622802734, -0.04606330394744873, -0.03417611122131348, -0.031133174896240234, -0.04512512683868408, -0.036688804626464844, -0.028400897979736328, -0.03621530532836914, -0.03667116165161133, -0.029553532600402832, -0.0451812744140625, -0.028472900390625, -0.042336225509643555, -0.03586530685424805, -0.029416322708129883, -0.030382513999938965, -0.04496479034423828, -0.03205609321594238, -0.03632718324661255, -0.03576767444610596, -0.029865145683288574, -0.028125405311584473, -0.0398707389831543, -0.031723976135253906, -0.02403545379638672, -0.04445171356201172, -0.0313190221786499, -0.03335857391357422, -0.03892087936401367, -0.02722907066345215, -0.02433907985687256, -0.03619319200515747, -0.035047054290771484, -0.03587019443511963, -0.023166418075561523, -0.028989434242248535, -0.026154041290283203, -0.03770560026168823, -0.030025839805603027, -0.03702831268310547, -0.04443061351776123, -0.04405093193054199, -0.02998042106628418, -0.0408862829208374, -0.03256726264953613, -0.03826594352722168, -0.03881406784057617, -0.042397499084472656, -0.024752378463745117, -0.024817466735839844, -0.03081226348876953, -0.035565972328186035, -0.0400547981262207, -0.04304671287536621, -0.0382152795791626, -0.03161430358886719, -0.026227235794067383, -0.027960777282714844, -0.031568169593811035, -0.041026949882507324, -0.029781818389892578, -0.04228568077087402, -0.028659582138061523, -0.02857530117034912, -0.038202524185180664, -0.03744339942932129, -0.03467369079589844, -0.04133307933807373, -0.024960696697235107, -0.05382668972015381, -0.03477132320404053, -0.024214088916778564, -0.03506636619567871, -0.03656172752380371, -0.03701227903366089, -0.033234238624572754, -0.027646541595458984, -0.03213000297546387, -0.036544084548950195, -0.05230510234832764], "post_transport_bootstrap_ci_low": -0.04441258907318115, "post_transport_diag": {"per_class": {"0": {"d_spec": 0.5890509486198425, "d_feat": 0.83882075548172, "effective_target_n": 313.5966491699219, "source_n": 24}, "1": {"d_spec": 0.4589322805404663, "d_feat": 0.932306170463562, "effective_target_n": 245.5103302001953, "source_n": 24}, "2": {"d_spec": 0.5420641899108887, "d_feat": 0.8597947359085083, "effective_target_n": 312.7164001464844, "source_n": 24}, "3": {"d_spec": 0.44038593769073486, "d_feat": 0.865239143371582, "effective_target_n": 299.7581787109375, "source_n": 24}, "4": {"d_spec": 0.4113762378692627, "d_feat": 0.4161926507949829, "effective_target_n": 133.86595153808594, "source_n": 24}, "5": {"d_spec": 0.3174140453338623, "d_feat": 0.035138845443725586, "effective_target_n": 210.56996154785156, "source_n": 24}, "6": {"d_spec": 0.3956880569458008, "d_feat": 0.28482532501220703, "effective_target_n": 206.14447021484375, "source_n": 24}}, "effective_target_n": {"0": 313.5966491699219, "1": 245.5103302001953, "2": 312.7164001464844, "3": 299.7581787109375, "4": 133.86595153808594, "5": 210.56996154785156, "6": 206.14447021484375}, "valid_classes": [0, 1, 2, 3, 4, 5, 6], "n_valid_classes": 7}, "post_source_risk": {"available": true, "new_error_rate": 0.025735294446349144, "worst_class_new_error": 0.12, "per_class_new_error": {"0": 0.0, "1": 0.05555555555555555, "2": 0.12, "3": null, "4": 0.0, "5": 0.0, "6": 0.0}, "margin_loss": 0.0645076110959053, "accuracy_before": 0.4742647111415863, "accuracy_after": 0.4632352888584137}, "spectral_diag": {"gain_min": 0.9999997019767761, "gain_max": 1.000000238418579, "offset_min": -0.0004968115244992077, "offset_max": 0.0011246291687712073, "gain_tv": 1.2516975402832031e-06, "offset_tv": 0.004037265200167894, "relative_spectral_change": 0.0007888733525760472, "shared_norm": 0.030000001192092896, "residual_norms": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]}, "spectral_reasons": [], "target_pseudo_flip_rate": 0.11458333333333333, "target_block_flip_rates": {"available": true, "max_block_flip_rate": 0.34782608695652173, "per_block": {"5": 0.0625, "7": 0.0, "9": 0.125, "17": 0.10526315789473684, "18": 0.23809523809523808, "20": 0.0, "21": 0.045454545454545456, "25": 0.08695652173913043, "26": 0.16666666666666666, "28": 0.0, "29": 0.15384615384615385, "31": 0.2, "33": 0.038461538461538464, "36": 0.34782608695652173, "43": 0.18181818181818182, "47": 0.041666666666666664, "59": 0.07692307692307693, "61": 0.0, "63": 0.14285714285714285}}}, "pure_source_ce_after_rejection": false}
+{"event": "run_complete", "task": "Houston13->Houston18", "config": "/root/autodl-tmp/TCSTdemo/hfcst_work/configs_hfcst/houston_metricfix_20261025_111525.yaml", "seed": 1237, "device": "cuda:0", "baseline_source_validation": {"available": true, "n": 467, "nll": 1.0268052816390991, "oa": 0.6895074844360352, "aa": 0.6434763504990509, "class_counts": {"0": 35, "1": 70, "2": 35, "3": 150, "4": 32, "5": 55, "6": 90}}, "committed_cycles": 0, "rollback_count": 1, "adaptation_stopped_reason": "post_training_acceptance_failed", "target_metrics_final_only": {"n": 53200, "OA": 0.5264849624060151, "AA": 0.45247241854705045, "MacroF1": 0.32777357286382586, "Kappa": 0.241612031070091, "confusion_matrix": [[158, 6, 252, 0, 102, 784, 51], [90, 29, 25, 0, 11, 4482, 251], [246, 25, 337, 3, 491, 1231, 433], [0, 0, 0, 22, 0, 0, 0], [1, 1, 1, 16, 3478, 543, 1307], [1, 26, 2, 49, 5445, 19762, 7174], [0, 5, 0, 2, 570, 1565, 4223]], "per_class_accuracy": [0.11677753141167775, 0.005932896890343699, 0.12183658712942878, 1.0, 0.6504582008602955, 0.6088296004189901, 0.6634721131186174], "gt_key": "map", "gt_loaded_after_final_checkpoint": true, "selection_used_target_gt": false}, "target_gt_used_for_selection": false, "final_checkpoint": "/root/autodl-tmp/TCSTdemo/hfcst_work/results_hfcst/houston_metricfix_20261025_111525_s1237/final.pt", "data_audit": "/root/autodl-tmp/TCSTdemo/hfcst_work/results_hfcst/houston_metricfix_20261025_111525_s1237/data_audit.json", "event_log": "/root/autodl-tmp/TCSTdemo/hfcst_work/results_hfcst/houston_metricfix_20261025_111525_s1237/events.jsonl"}

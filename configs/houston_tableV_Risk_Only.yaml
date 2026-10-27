@@ -1,0 +1,75 @@
+dataset:
+  name: houston
+  source_name: Houston13
+  target_name: Houston18
+  source_image: /root/autodl-tmp/v7.0/PTMDA-Net_v7_reopt/Datasets/Houston/Houston13.mat
+  source_gt: /root/autodl-tmp/v7.0/PTMDA-Net_v7_reopt/Datasets/Houston/Houston13_7gt.mat
+  target_image: /root/autodl-tmp/v7.0/PTMDA-Net_v7_reopt/Datasets/Houston/Houston18.mat
+  target_gt: /root/autodl-tmp/v7.0/PTMDA-Net_v7_reopt/Datasets/Houston/Houston18_7gt.mat
+  num_classes: 7
+  expected_bands:
+    source: null
+    target: null
+  band_stride_source: 1
+training:
+  patch_size: 11
+  batch_size: 16
+  source_train_ratio: 1.0
+  constraint_per_class: 12
+  calibration_per_class: 12
+  epochs_warmup: 30
+  epochs_per_cycle: 5
+  num_cycles: 4
+  lr: 0.0003
+  weight_decay: 0.002
+  num_workers: 4
+  amp: true
+  target_pool_size: 4000
+  ce_class_balance_power: 0.0
+  force_final_epoch: false
+  cal_pool_multiplier: 5
+  use_ba_cs: true
+  per_class_val_cap: 0
+  per_class_train_cap: 150
+  per_class_val_target: 150
+  use_spatial_block_split: true
+  spatial_grid_size: 10
+  use_source_augmentation: true
+  aug_noise_std: 0.01
+  aug_scale_range: 0.08
+  use_cb_val: true
+  label_smoothing: 0.05
+  ckpt_mode: D
+  use_safe_training: false
+tcst:
+  K: 8
+  rho_a: 0.15
+  rho_b: 0.15
+  rho_m: 0.05
+  lambda_d: 0.01
+  lambda_xi: 1.0
+  lambda_safe: 1.0
+  per_class_constraint_samples: 12
+  top_competitors: 2
+  eta_candidates:
+  - 1.0
+  - 0.5
+  - 0.25
+  - 0.125
+  - 0.0625
+  - 0.03125
+  tau_sem: 0.3
+  tau_flip: 0.02
+  tau_class_flip: 0.1
+  init_weights_from_class_freq: false
+  use_rs_crw: true
+  rs_crw_alpha: 2.0
+  rs_crw_min_cal_samples: 5
+  rs_crw_ema: 0.5
+  cal_pool_multiplier: 5
+  tau_swd_rel: 0.01
+  use_qp: false
+  use_risk_search: true
+output:
+  save_dir: /root/autodl-tmp/TCSTdemo/results_ablation/Houston_TableV/Risk_Only
+  seed: 1237

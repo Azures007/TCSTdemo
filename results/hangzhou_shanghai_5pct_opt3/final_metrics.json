@@ -1,0 +1,294 @@
+{
+  "dataset": "hangzhou_shanghai",
+  "bands": 198,
+  "num_classes": 3,
+  "cycles": [
+    {
+      "cycle": 1,
+      "diag": {
+        "swd_before": 0.20390774309635162,
+        "candidates": [
+          {
+            "eta": 1.0,
+            "V": 0.0,
+            "Vmax": 0.0,
+            "Rsem": 0.0,
+            "swd_before": 0.20390774309635162,
+            "swd_after": 0.20373329520225525,
+            "swd_drop": 0.0001744478940963745,
+            "Vc": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "phi_norm": 0.07960930466651917,
+            "spectral": {
+              "relative_spectral_change": 0.0006919410661794245,
+              "gain_min": 0.9988592267036438,
+              "gain_max": 0.9999750256538391,
+              "offset_min": -4.994863411411643e-05,
+              "offset_max": 3.2820593332871795e-05
+            }
+          }
+        ],
+        "cal_class_counts": [
+          12.0,
+          12.0,
+          12.0
+        ],
+        "accepted_eta": 1.0
+      },
+      "best_src_val": 96.52991452991454,
+      "class_risk_weights": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "cycle": 2,
+      "diag": {
+        "swd_before": 0.22032222151756287,
+        "candidates": [
+          {
+            "eta": 1.0,
+            "V": 0.0,
+            "Vmax": 0.0,
+            "Rsem": 0.0,
+            "swd_before": 0.22032222151756287,
+            "swd_after": 0.22011126577854156,
+            "swd_drop": 0.00021095573902130127,
+            "Vc": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "phi_norm": 0.08254606276750565,
+            "spectral": {
+              "relative_spectral_change": 0.0006760606192983687,
+              "gain_min": 0.9988148212432861,
+              "gain_max": 1.0000590085983276,
+              "offset_min": -4.3419513531262055e-05,
+              "offset_max": 2.6055509806610644e-05
+            }
+          }
+        ],
+        "cal_class_counts": [
+          12.0,
+          12.0,
+          12.0
+        ],
+        "accepted_eta": 1.0
+      },
+      "best_src_val": 96.52991452991454,
+      "class_risk_weights": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "cycle": 3,
+      "diag": {
+        "swd_before": 0.1980944126844406,
+        "candidates": [
+          {
+            "eta": 1.0,
+            "V": 0.0,
+            "Vmax": 0.0,
+            "Rsem": 0.0,
+            "swd_before": 0.1980944126844406,
+            "swd_after": 0.19790451228618622,
+            "swd_drop": 0.00018990039825439453,
+            "Vc": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "phi_norm": 0.0868789330124855,
+            "spectral": {
+              "relative_spectral_change": 0.000752592517528683,
+              "gain_min": 0.9988090395927429,
+              "gain_max": 0.9999721646308899,
+              "offset_min": -4.7592206101398915e-05,
+              "offset_max": 3.15927536576055e-05
+            }
+          }
+        ],
+        "cal_class_counts": [
+          12.0,
+          12.0,
+          12.0
+        ],
+        "accepted_eta": 1.0
+      },
+      "best_src_val": 96.52991452991454,
+      "class_risk_weights": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "cycle": 4,
+      "diag": {
+        "swd_before": 0.18389490246772766,
+        "candidates": [
+          {
+            "eta": 1.0,
+            "V": 0.0,
+            "Vmax": 0.0,
+            "Rsem": 0.0,
+            "swd_before": 0.18389490246772766,
+            "swd_after": 0.18374739587306976,
+            "swd_drop": 0.00014750659465789795,
+            "Vc": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "phi_norm": 0.08766037970781326,
+            "spectral": {
+              "relative_spectral_change": 0.0007191280019469559,
+              "gain_min": 0.998793363571167,
+              "gain_max": 0.9999894499778748,
+              "offset_min": -6.032142118783668e-05,
+              "offset_max": 3.440775253693573e-05
+            }
+          }
+        ],
+        "cal_class_counts": [
+          12.0,
+          12.0,
+          12.0
+        ],
+        "accepted_eta": 1.0
+      },
+      "best_src_val": 96.9013209013209,
+      "class_risk_weights": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "cycle": 5,
+      "diag": {
+        "swd_before": 0.21325989067554474,
+        "candidates": [
+          {
+            "eta": 1.0,
+            "V": 0.0,
+            "Vmax": 0.0,
+            "Rsem": 1.1831716619781218e-06,
+            "swd_before": 0.21325989067554474,
+            "swd_after": 0.21310383081436157,
+            "swd_drop": 0.0001560598611831665,
+            "Vc": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "phi_norm": 0.08362765610218048,
+            "spectral": {
+              "relative_spectral_change": 0.0007634673966094851,
+              "gain_min": 0.998749315738678,
+              "gain_max": 0.999973475933075,
+              "offset_min": -5.465166759677231e-05,
+              "offset_max": 3.5704357287613675e-05
+            }
+          }
+        ],
+        "cal_class_counts": [
+          12.0,
+          12.0,
+          12.0
+        ],
+        "accepted_eta": 1.0
+      },
+      "best_src_val": 96.9013209013209,
+      "class_risk_weights": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "cycle": 6,
+      "diag": {
+        "swd_before": 0.22258928418159485,
+        "candidates": [
+          {
+            "eta": 1.0,
+            "V": 0.0,
+            "Vmax": 0.0,
+            "Rsem": 0.0,
+            "swd_before": 0.22258928418159485,
+            "swd_after": 0.2223813831806183,
+            "swd_drop": 0.0002079010009765625,
+            "Vc": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "phi_norm": 0.08389632403850555,
+            "spectral": {
+              "relative_spectral_change": 0.0007346899365074933,
+              "gain_min": 0.9988255500793457,
+              "gain_max": 0.9999832510948181,
+              "offset_min": -5.416129715740681e-05,
+              "offset_max": 3.281124008935876e-05
+            }
+          }
+        ],
+        "cal_class_counts": [
+          12.0,
+          12.0,
+          12.0
+        ],
+        "accepted_eta": 1.0
+      },
+      "best_src_val": 96.9013209013209,
+      "class_risk_weights": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    }
+  ],
+  "best_src_val": 96.9013209013209,
+  "source_split": {
+    "train": 6784,
+    "constraint": 36,
+    "cal_pool": 180,
+    "val": 128700
+  },
+  "target_metrics": {
+    "OA": 59.36983695652174,
+    "AA": 66.94866874968723,
+    "Kappa": 0.4203395603676648,
+    "MacroF1": 60.41658124064079,
+    "class_accuracy": [
+      71.99061101500126,
+      28.85539523406045,
+      100.0
+    ],
+    "confusion_matrix": [
+      [
+        88637,
+        34213,
+        273
+      ],
+      [
+        0,
+        46656,
+        115033
+      ],
+      [
+        0,
+        0,
+        83188
+      ]
+    ]
+  }
+}

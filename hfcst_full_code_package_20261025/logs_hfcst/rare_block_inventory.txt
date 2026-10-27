@@ -1,0 +1,63 @@
+
+========== houston13_to_houston18 ==========
+
+--- grid=8 ---
+class=1, blocks=[(2, 'train', 228), (12, 'validation', 72), (21, 'calibration', 35)]
+class=4, blocks=[(12, 'validation', 28), (19, 'train', 188), (50, 'calibration', 6)]
+稀有类别所在区块的完整计数：
+block=002 split=train        total= 228 counts=[228, 0, 0, 0, 0, 0, 0]
+block=012 split=validation   total= 109 counts=[72, 0, 0, 28, 0, 9, 0]
+block=019 split=train        total= 193 counts=[0, 0, 5, 188, 0, 0, 0]
+block=021 split=calibration  total=  35 counts=[35, 0, 0, 0, 0, 0, 0]
+block=050 split=calibration  total=  34 counts=[0, 0, 0, 6, 28, 0, 0]
+
+--- grid=10 ---
+class=1, blocks=[(2, 'constraint', 80), (3, 'calibration', 10), (15, 'validation', 40), (36, 'train', 45)]
+class=4, blocks=[(15, 'validation', 26), (24, 'calibration', 43), (34, 'constraint', 40), (82, 'validation', 6)]
+稀有类别所在区块的完整计数：
+block=002 split=constraint   total=  80 counts=[80, 0, 0, 0, 0, 0, 0]
+block=003 split=calibration  total=  10 counts=[10, 0, 0, 0, 0, 0, 0]
+block=015 split=validation   total=  75 counts=[40, 0, 0, 26, 0, 9, 0]
+block=024 split=calibration  total=  62 counts=[0, 0, 19, 43, 0, 0, 0]
+block=034 split=constraint   total=  40 counts=[0, 0, 0, 40, 0, 0, 0]
+block=036 split=train        total=  45 counts=[45, 0, 0, 0, 0, 0, 0]
+block=082 split=validation   total=  22 counts=[0, 0, 0, 6, 16, 0, 0]
+
+========== hyrank_dioni_to_loukia ==========
+
+--- grid=8 ---
+class=2, blocks=[(21, 'train', 47), (29, 'constraint', 72)]
+class=4, blocks=[(3, 'train', 79), (11, 'validation', 12), (12, 'constraint', 2)]
+class=6, blocks=[(7, 'calibration', 88), (15, 'train', 111), (23, 'validation', 50)]
+class=10, blocks=[(15, 'train', 23), (23, 'validation', 292), (52, 'train', 5), (54, 'constraint', 4)]
+稀有类别所在区块的完整计数：
+block=003 split=train        total= 210 counts=[0, 0, 0, 79, 131, 0, 0, 0, 0, 0, 0, 0]
+block=007 split=calibration  total= 185 counts=[0, 0, 0, 0, 0, 88, 0, 97, 0, 0, 0, 0]
+block=011 split=validation   total= 233 counts=[0, 0, 8, 12, 89, 0, 124, 0, 0, 0, 0, 0]
+block=012 split=constraint   total= 251 counts=[129, 0, 99, 2, 21, 0, 0, 0, 0, 0, 0, 0]
+block=015 split=train        total= 400 counts=[0, 0, 0, 0, 0, 111, 32, 234, 0, 23, 0, 0]
+block=021 split=train        total= 208 counts=[7, 47, 0, 0, 0, 0, 95, 59, 0, 0, 0, 0]
+block=023 split=validation   total= 601 counts=[0, 0, 0, 0, 0, 50, 0, 259, 0, 292, 0, 0]
+block=029 split=constraint   total= 359 counts=[33, 72, 0, 0, 0, 0, 0, 214, 40, 0, 0, 0]
+block=052 split=train        total= 193 counts=[0, 0, 15, 0, 0, 0, 0, 0, 173, 5, 0, 0]
+block=054 split=constraint   total= 205 counts=[0, 0, 3, 0, 0, 0, 105, 40, 53, 4, 0, 0]
+
+--- grid=10 ---
+class=2, blocks=[(36, 'calibration', 58), (46, 'constraint', 45)]
+class=4, blocks=[(4, 'constraint', 50), (14, 'calibration', 34), (15, 'validation', 4), (63, 'train', 2)]
+class=6, blocks=[(9, 'train', 79), (19, 'validation', 63), (29, 'constraint', 59), (39, 'calibration', 12)]
+class=10, blocks=[(29, 'constraint', 19), (39, 'calibration', 218), (76, 'constraint', 20)]
+稀有类别所在区块的完整计数：
+block=004 split=constraint   total= 119 counts=[0, 0, 0, 50, 69, 0, 0, 0, 0, 0, 0, 0]
+block=009 split=train        total= 176 counts=[0, 0, 0, 0, 0, 79, 0, 97, 0, 0, 0, 0]
+block=014 split=calibration  total=  67 counts=[0, 0, 0, 34, 33, 0, 0, 0, 0, 0, 0, 0]
+block=015 split=validation   total= 171 counts=[0, 0, 109, 4, 58, 0, 0, 0, 0, 0, 0, 0]
+block=019 split=validation   total= 307 counts=[0, 0, 0, 0, 0, 63, 129, 115, 0, 0, 0, 0]
+block=029 split=constraint   total=  78 counts=[0, 0, 0, 0, 0, 59, 0, 0, 0, 19, 0, 0]
+block=036 split=calibration  total= 214 counts=[0, 58, 0, 0, 0, 0, 0, 114, 42, 0, 0, 0]
+block=039 split=calibration  total= 478 counts=[0, 0, 0, 0, 0, 12, 0, 248, 0, 218, 0, 0]
+block=046 split=constraint   total= 218 counts=[24, 45, 0, 0, 0, 0, 0, 107, 42, 0, 0, 0]
+block=063 split=train        total= 103 counts=[0, 0, 76, 2, 25, 0, 0, 0, 0, 0, 0, 0]
+block=076 split=constraint   total= 115 counts=[0, 0, 0, 0, 0, 0, 78, 17, 0, 20, 0, 0]
+
+只读检查完成；没有修改配置或启动训练。
