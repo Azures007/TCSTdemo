@@ -74,6 +74,7 @@ tcst:
   rs_crw_ema: 0.5
   cal_pool_multiplier: 5
   tau_swd_rel: 0.01
+  target_min_effective_samples: 4
 output:
   save_dir: /root/autodl-tmp/TCSTdemo/results_final_three/hyrank
   seed: 1237

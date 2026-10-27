@@ -40,7 +40,8 @@ from torch.optim import AdamW
 
 from core.data import (align_bands, build_patches, load_scene,
                        sample_unlabeled, _load_mat, _pick_2d)
-from core.discrepancy import domain_gradient_mmd, spectral_descriptor
+from core.discrepancy import (domain_gradient_mmd, spectral_descriptor,
+                              target_consensus_statistics)
 from core.metrics import classification_metrics, confusion_matrix
 from core.model import DualReliabilityEncoder
 from core.risk_controller import backtracking_search
@@ -903,52 +904,71 @@ def run_tcst_v8(cfg, device):
         _log(f"\n--- Cycle {cycle} ---")
         model.eval()
         qp = None
-        
-        # 生成伪标签
+
+        # Use all unlabeled transport samples only when pseudo-label training needs them.
+        _tgt_rng = np.random.default_rng(cfg["output"]["seed"] + 500 + cycle)
+        _n_tgt = min(128, len(tgt_transport_p))
+        _tgt_idx = _tgt_rng.choice(len(tgt_transport_p), _n_tgt, replace=False)
+        _target_eval_idx = (np.arange(len(tgt_transport_p)) if use_pseudo else _tgt_idx)
+        _context_logits, _spectral_logits, _fused_logits, _spectral_reliability = [], [], [], []
+        with torch.no_grad():
+            for _s in range(0, len(_target_eval_idx), 128):
+                _idx = _target_eval_idx[_s:_s+128]
+                _xb = torch.from_numpy(tgt_transport_p[_idx]).to(device)
+                _out = model(_xb)
+                _context_logits.append(_out.context_logits.float().cpu())
+                _spectral_logits.append(_out.spectral_logits.float().cpu())
+                _fused_logits.append(_out.logits.float().cpu())
+                _spectral_reliability.append(_out.spectral_reliability.float().cpu())
+        _probs, _target_weights, _target_agreement = target_consensus_statistics(
+            torch.cat(_context_logits), torch.cat(_spectral_logits),
+            torch.cat(_fused_logits), torch.cat(_spectral_reliability))
+        _log(f"  [target-consensus] agreement={float(_target_agreement.float().mean()):.3f}  "
+             f"reliable_weight={float(_target_weights.sum()):.1f}/{len(_target_weights)}")
+
         if use_pseudo:
-            with torch.no_grad():
-                _probs_list = []
-                for _s in range(0, len(tgt_transport_p), 128):
-                    _xb = torch.from_numpy(tgt_transport_p[_s:_s+128]).to(device)
-                    _lg = model(_xb).logits
-                    _probs_list.append(torch.softmax(_lg.float(), dim=1).cpu())
-                _probs = torch.cat(_probs_list, 0)
-                _conf, _pl = _probs.max(1)
-                _thr = float(cfg["training"].get("pseudo_threshold", 0.8))
-                _conf = _conf.numpy()
-                _pl = _pl.numpy()
-                
-                # 类别均衡伪标签选择：每个类最多选 top_k 个高置信度样本
-                _per_class = int(cfg["training"].get("pseudo_per_class", 200))
-                _selected_idx = []
-                for _c in range(num_classes):
-                    _c_idx = np.where((_pl == _c) & (_conf >= _thr))[0]
-                    if len(_c_idx) > 0:
-                        _sorted_idx = _c_idx[np.argsort(-_conf[_c_idx])]
-                        _selected_idx.extend(_sorted_idx[:_per_class].tolist())
-                
-                if len(_selected_idx) > 0:
-                    _selected_idx = np.array(_selected_idx)
-                    pseudo_state["xb"] = tgt_transport_p[_selected_idx]
-                    pseudo_state["yb"] = _pl[_selected_idx].astype(np.int64)
-                    _counts = np.bincount(pseudo_state["yb"], minlength=num_classes).tolist()
-                    _log(f"  [Pseudo] CB-selected {len(_selected_idx)} samples, dist={_counts}")
-                else:
-                    pseudo_state["xb"] = None
-                    pseudo_state["yb"] = None
-                    _log(f"  [Pseudo] None selected (thr={_thr})")
+            _conf, _pl = _probs.max(1)
+            _thr = float(cfg["training"].get("pseudo_threshold", 0.8))
+            _conf = _conf.numpy()
+            _pl = _pl.numpy()
+            _weights = _target_weights.numpy()
+            _agreement = _target_agreement.numpy()
+
+            # Keep only agreed predictions; rank candidates by confidence and model reliability.
+            _per_class = int(cfg["training"].get("pseudo_per_class", 200))
+            _selected_idx = []
+            for _c in range(num_classes):
+                _c_idx = np.where((_pl == _c) & (_conf >= _thr)
+                                  & _agreement & (_weights > 0))[0]
+                if len(_c_idx) > 0:
+                    _sorted_idx = _c_idx[np.argsort(-_weights[_c_idx])]
+                    _selected_idx.extend(_sorted_idx[:_per_class].tolist())
+
+            if len(_selected_idx) > 0:
+                _selected_idx = np.asarray(_selected_idx)
+                pseudo_state["xb"] = tgt_transport_p[_selected_idx]
+                pseudo_state["yb"] = _pl[_selected_idx].astype(np.int64)
+                _counts = np.bincount(pseudo_state["yb"], minlength=num_classes).tolist()
+                _log(f"  [Pseudo] consensus-selected {len(_selected_idx)} samples, dist={_counts}")
+            else:
+                pseudo_state["xb"] = None
+                pseudo_state["yb"] = None
+                _log(f"  [Pseudo] None selected (thr={_thr}, three-view agreement required)")
 
         src_mmd_idx = _class_balanced_subsample(src_tr_y, 128,
                                                 seed=cfg["output"]["seed"] + 500 + cycle)
         src_for_mmd = torch.from_numpy(src_tr_p[src_mmd_idx]).to(device)
         src_mmd_labels = torch.from_numpy(src_tr_y[src_mmd_idx]).long().to(device)
         # T7: 每 cycle 从 transport pool 随机抽 128，而非固定前 128
-        _tgt_rng = np.random.default_rng(cfg["output"]["seed"] + 500 + cycle)
-        _n_tgt = min(128, len(tgt_transport_p))
-        _tgt_idx = _tgt_rng.choice(len(tgt_transport_p), _n_tgt, replace=False)
         tgt_desc = spectral_descriptor(
             torch.from_numpy(tgt_transport_p[_tgt_idx]).to(device))
-        g_D, mmd0 = domain_gradient_mmd(transform, src_for_mmd, tgt_desc, source_labels=src_mmd_labels)
+        _mmd_pos = _tgt_idx if use_pseudo else np.arange(len(_tgt_idx))
+        _target_probs = _probs[_mmd_pos].to(device)
+        _target_weights_mmd = _target_weights[_mmd_pos].to(device)
+        g_D, mmd0 = domain_gradient_mmd(
+            transform, src_for_mmd, tgt_desc, source_labels=src_mmd_labels,
+            target_class_probs=_target_probs, target_weights=_target_weights_mmd,
+            min_effective_samples=int(cfg["tcst"].get("target_min_effective_samples", 4)))
         g_D_np = g_D.cpu().numpy().astype(np.float32)
         g_D_norm_raw = float(np.linalg.norm(g_D_np))
         _log(f"  [transport] MMD^2(phi=0)={mmd0:.4f}  ||g_D_raw||={g_D_norm_raw:.4e} "
