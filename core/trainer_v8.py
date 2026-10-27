@@ -44,9 +44,7 @@ from core.discrepancy import domain_gradient_mmd, spectral_descriptor
 from core.metrics import classification_metrics, confusion_matrix
 from core.model import DualReliabilityEncoder
 from core.risk_controller import backtracking_search
-from core.spectral_transform import (ClassSmoothSpectralTransform,
-                                     HierarchicalSpectralTransform,
-                                     SmoothSpectralTransform)
+from core.spectral_transform import SmoothSpectralTransform, ClassSmoothSpectralTransform
 from core.task_geometry import compute_margin_gradients, select_constraint_samples
 from core.transport_solver import solve_margin_qp
 
@@ -625,16 +623,8 @@ def run_tcst_v8(cfg, device):
         _log(f"\n[RS-CRW] ENABLED: alpha={rs_crw_alpha}  min_cal={rs_crw_min_cal}  ema={rs_crw_ema}")
 
     model = _make_model(bands, num_classes, device, cfg=cfg)
-    use_hierarchical = bool(cfg["tcst"].get("use_hierarchical_residual", False))
     use_class_cond = bool(cfg["tcst"].get("use_class_conditional", False))
-    if use_hierarchical:
-        transform = HierarchicalSpectralTransform(
-            bands, num_classes=num_classes, K=cfg["tcst"]["K"],
-            residual_k=cfg["tcst"].get("residual_k", 2),
-            rho_a=cfg["tcst"]["rho_a"], rho_b=cfg["tcst"]["rho_b"]).to(device)
-        _log(f"[transform] HIERARCHICAL: C={num_classes}, K={cfg['tcst']['K']}, "
-             f"residual_k={transform.residual_k}, dim={transform.dim}")
-    elif use_class_cond:
+    if use_class_cond:
         transform = ClassSmoothSpectralTransform(
             bands, num_classes=num_classes, K=cfg["tcst"]["K"],
             rho_a=cfg["tcst"]["rho_a"], rho_b=cfg["tcst"]["rho_b"]).to(device)
@@ -863,7 +853,6 @@ def run_tcst_v8(cfg, device):
     _dom_rng = np.random.default_rng(cfg["output"]["seed"] + 777)
     _dom_idx = _dom_rng.choice(len(src_tr_p), min(128, len(src_tr_p)), replace=False)
     src_domain_cal_p = src_tr_p[_dom_idx]
-    src_domain_cal_y = src_tr_y[_dom_idx]
     ba_cs_ca_p, ba_cs_ca_y, ba_cs_counts = _sample_boundary_calibration(
         model, src_ca_p, src_ca_y,
         per_class=cfg["training"]["calibration_per_class"],
@@ -915,9 +904,8 @@ def run_tcst_v8(cfg, device):
         model.eval()
         qp = None
         
-        # Target-only predictions gate residuals and optionally provide pseudo-labels.
-        _probs = None
-        if use_pseudo or isinstance(transform, HierarchicalSpectralTransform):
+        # 生成伪标签
+        if use_pseudo:
             with torch.no_grad():
                 _probs_list = []
                 for _s in range(0, len(tgt_transport_p), 128):
@@ -925,37 +913,30 @@ def run_tcst_v8(cfg, device):
                     _lg = model(_xb).logits
                     _probs_list.append(torch.softmax(_lg.float(), dim=1).cpu())
                 _probs = torch.cat(_probs_list, 0)
-
-        if isinstance(transform, HierarchicalSpectralTransform):
-            _gates = transform.set_class_reliability(_probs)
-            _log(f"  [class-residual] target-only reliability="
-                 f"{[round(float(x), 2) for x in _gates.tolist()]}")
-
-        if use_pseudo:
-            _conf, _pl = _probs.max(1)
-            _thr = float(cfg["training"].get("pseudo_threshold", 0.8))
-            _conf = _conf.numpy()
-            _pl = _pl.numpy()
-
-            # 类别均衡伪标签选择：每个类最多选 top_k 个高置信度样本
-            _per_class = int(cfg["training"].get("pseudo_per_class", 200))
-            _selected_idx = []
-            for _c in range(num_classes):
-                _c_idx = np.where((_pl == _c) & (_conf >= _thr))[0]
-                if len(_c_idx) > 0:
-                    _sorted_idx = _c_idx[np.argsort(-_conf[_c_idx])]
-                    _selected_idx.extend(_sorted_idx[:_per_class].tolist())
-
-            if len(_selected_idx) > 0:
-                _selected_idx = np.array(_selected_idx)
-                pseudo_state["xb"] = tgt_transport_p[_selected_idx]
-                pseudo_state["yb"] = _pl[_selected_idx].astype(np.int64)
-                _counts = np.bincount(pseudo_state["yb"], minlength=num_classes).tolist()
-                _log(f"  [Pseudo] CB-selected {len(_selected_idx)} samples, dist={_counts}")
-            else:
-                pseudo_state["xb"] = None
-                pseudo_state["yb"] = None
-                _log(f"  [Pseudo] None selected (thr={_thr})")
+                _conf, _pl = _probs.max(1)
+                _thr = float(cfg["training"].get("pseudo_threshold", 0.8))
+                _conf = _conf.numpy()
+                _pl = _pl.numpy()
+                
+                # 类别均衡伪标签选择：每个类最多选 top_k 个高置信度样本
+                _per_class = int(cfg["training"].get("pseudo_per_class", 200))
+                _selected_idx = []
+                for _c in range(num_classes):
+                    _c_idx = np.where((_pl == _c) & (_conf >= _thr))[0]
+                    if len(_c_idx) > 0:
+                        _sorted_idx = _c_idx[np.argsort(-_conf[_c_idx])]
+                        _selected_idx.extend(_sorted_idx[:_per_class].tolist())
+                
+                if len(_selected_idx) > 0:
+                    _selected_idx = np.array(_selected_idx)
+                    pseudo_state["xb"] = tgt_transport_p[_selected_idx]
+                    pseudo_state["yb"] = _pl[_selected_idx].astype(np.int64)
+                    _counts = np.bincount(pseudo_state["yb"], minlength=num_classes).tolist()
+                    _log(f"  [Pseudo] CB-selected {len(_selected_idx)} samples, dist={_counts}")
+                else:
+                    pseudo_state["xb"] = None
+                    pseudo_state["yb"] = None
+                    _log(f"  [Pseudo] None selected (thr={_thr})")
 
         src_mmd_idx = _class_balanced_subsample(src_tr_y, 128,
                                                 seed=cfg["output"]["seed"] + 500 + cycle)
@@ -967,11 +948,7 @@ def run_tcst_v8(cfg, device):
         _tgt_idx = _tgt_rng.choice(len(tgt_transport_p), _n_tgt, replace=False)
         tgt_desc = spectral_descriptor(
             torch.from_numpy(tgt_transport_p[_tgt_idx]).to(device))
-        _target_probs = (_probs[_tgt_idx].to(device)
-                         if isinstance(transform, HierarchicalSpectralTransform) else None)
-        g_D, mmd0 = domain_gradient_mmd(
-            transform, src_for_mmd, tgt_desc, source_labels=src_mmd_labels,
-            target_class_probs=_target_probs)
+        g_D, mmd0 = domain_gradient_mmd(transform, src_for_mmd, tgt_desc, source_labels=src_mmd_labels)
         g_D_np = g_D.cpu().numpy().astype(np.float32)
         g_D_norm_raw = float(np.linalg.norm(g_D_np))
         _log(f"  [transport] MMD^2(phi=0)={mmd0:.4f}  ||g_D_raw||={g_D_norm_raw:.4e} "
@@ -1046,8 +1023,7 @@ def run_tcst_v8(cfg, device):
                     offset_tv_max=float(cfg["tcst"].get("offset_tv_max", 0.18)),
                     rel_change_max=float(cfg["tcst"].get("rel_change_max", 0.15)),
                     rsem_delta=float(cfg["tcst"].get("rsem_delta", 0.05)),
-                    domain_cal_patches=src_domain_cal_p,
-                    domain_cal_labels=src_domain_cal_y)
+                    domain_cal_patches=src_domain_cal_p)
                 _log(f"  [risk] accepted eta={eta_star:.4f}  "
                      f"phi_norm={float(phi_star.norm()):.4f}")
                 diag["accepted_eta"] = float(eta_star)

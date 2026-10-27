@@ -19,15 +19,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
     ap.add_argument("--device", default=None)
-    ap.add_argument("--seed", type=int, default=None)
-    ap.add_argument("--save-dir", default=None)
     args = ap.parse_args()
 
     cfg = yaml.safe_load(Path(args.config).read_text())
-    if args.seed is not None:
-        cfg["output"]["seed"] = args.seed
-    if args.save_dir is not None:
-        cfg["output"]["save_dir"] = args.save_dir
     device = torch.device(args.device if args.device
                           else ("cuda:0" if torch.cuda.is_available() else "cpu"))
     print(f"[device] {device}")
