@@ -1,17 +1,19 @@
+# Python
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 .Python
+# Logs & Results
 *.log
+results*/
+# Archives & Backups
 *.tar.gz
 *.zip
 *.rar
-results_*/
-results_ablation/
-results_final_three/
 core_backup_*/
 core_broken_*/
+# Models
 *.pth
 *.pt
 *.pkl
