@@ -21,8 +21,15 @@ def _sq_dist(x, y):
     return (xx + yy.t() - 2 * (x @ y.t())).clamp_min(0.0)
 
 
-def mk_mmd2(x, y, bandwidths=None):
+def mk_mmd2(x, y, bandwidths=None, y_weights=None):
     dxx = _sq_dist(x, x); dyy = _sq_dist(y, y); dxy = _sq_dist(x, y)
+    weights = None
+    if y_weights is not None:
+        weights = torch.as_tensor(y_weights, device=y.device, dtype=y.dtype).reshape(-1)
+        if (weights.numel() != y.size(0) or not torch.isfinite(weights).all()
+                or (weights < 0).any() or weights.sum() <= 0):
+            raise ValueError("y_weights must be finite, non-negative, and have positive mass")
+        weights = weights / weights.sum()
     
     # 如果没有指定带宽，使用中位数启发式（自动适应高维空间）
     if bandwidths is None:
@@ -42,21 +49,60 @@ def mk_mmd2(x, y, bandwidths=None):
         
     total = x.new_tensor(0.0)
     for bw in bandwidths:
-        total = total + (torch.exp(-dxx / (2*bw*bw)).mean()
-                         + torch.exp(-dyy / (2*bw*bw)).mean()
-                         - 2 * torch.exp(-dxy / (2*bw*bw)).mean())
+        kxx = torch.exp(-dxx / (2*bw*bw))
+        kyy = torch.exp(-dyy / (2*bw*bw))
+        kxy = torch.exp(-dxy / (2*bw*bw))
+        if weights is None:
+            total = total + (kxx.mean() + kyy.mean() - 2 * kxy.mean())
+        else:
+            total = total + (kxx.mean()
+                             + (kyy * weights[:, None] * weights[None, :]).sum()
+                             - 2 * (kxy * weights[None, :]).sum() / x.size(0))
     return total / len(bandwidths)
 
 
 def domain_gradient_mmd(transform, source_images, target_descriptor,
-                        bandwidths=None, source_labels=None):
+                        bandwidths=None, source_labels=None,
+                        target_class_probs=None):
     phi = torch.zeros(transform.dim, device=source_images.device, requires_grad=True)
     if source_labels is not None:
         d_s = spectral_descriptor(transform(source_images, phi, labels=source_labels))
     else:
         d_s = spectral_descriptor(transform(source_images, phi))
     loss = mk_mmd2(d_s, target_descriptor, bandwidths)
-    grad = torch.autograd.grad(loss, phi, create_graph=False)[0]
+    if target_class_probs is None:
+        grad = torch.autograd.grad(loss, phi, create_graph=False)[0]
+        return grad.detach(), float(loss.detach())
+    if source_labels is None or not hasattr(transform, "class_reliability"):
+        raise ValueError("class-conditional MMD requires labeled source samples and a hierarchical transform")
+    target_class_probs = torch.as_tensor(
+        target_class_probs, device=target_descriptor.device, dtype=target_descriptor.dtype)
+    if target_class_probs.shape != (target_descriptor.size(0), transform.num_classes):
+        raise ValueError("target_class_probs must have shape [target samples, num_classes]")
+    if (not torch.isfinite(target_class_probs).all() or (target_class_probs < 0).any()
+            or (target_class_probs.sum(dim=1) <= 0).any()):
+        raise ValueError("target_class_probs must be finite, non-negative probability rows")
+
+    grad = torch.zeros_like(phi)
+    global_grad = torch.autograd.grad(loss, phi, retain_graph=True)[0]
+    grad[:transform.global_dim] = global_grad[:transform.global_dim]
+    labels = source_labels.to(source_images.device).long()
+    classes, residual_k = transform.num_classes, transform.residual_k
+    reliability = transform.class_reliability.to(source_images.device)
+    normalizer = reliability.sum().clamp_min(1.0)
+    for c in range(classes):
+        weights = target_class_probs[:, c]
+        source_mask = labels == c
+        if reliability[c] <= 0 or not source_mask.any() or weights.sum() <= 0:
+            continue
+        class_loss = mk_mmd2(d_s[source_mask], target_descriptor,
+                             bandwidths, y_weights=weights)
+        class_grad = torch.autograd.grad(class_loss, phi, retain_graph=True)[0]
+        scale = reliability[c] / normalizer
+        alpha = transform.global_dim + c * residual_k
+        beta = transform.global_dim + classes * residual_k + c * residual_k
+        grad[alpha:alpha + residual_k] = scale * class_grad[alpha:alpha + residual_k]
+        grad[beta:beta + residual_k] = scale * class_grad[beta:beta + residual_k]
     return grad.detach(), float(loss.detach())
 
 

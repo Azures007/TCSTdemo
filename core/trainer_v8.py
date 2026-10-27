@@ -44,7 +44,9 @@ from core.discrepancy import domain_gradient_mmd, spectral_descriptor
 from core.metrics import classification_metrics, confusion_matrix
 from core.model import DualReliabilityEncoder
 from core.risk_controller import backtracking_search
-from core.spectral_transform import SmoothSpectralTransform, ClassSmoothSpectralTransform
+from core.spectral_transform import (ClassSmoothSpectralTransform,
+                                     HierarchicalSpectralTransform,
+                                     SmoothSpectralTransform)
 from core.task_geometry import compute_margin_gradients, select_constraint_samples
 from core.transport_solver import solve_margin_qp
 
@@ -623,8 +625,16 @@ def run_tcst_v8(cfg, device):
         _log(f"\n[RS-CRW] ENABLED: alpha={rs_crw_alpha}  min_cal={rs_crw_min_cal}  ema={rs_crw_ema}")
 
     model = _make_model(bands, num_classes, device, cfg=cfg)
+    use_hierarchical = bool(cfg["tcst"].get("use_hierarchical_residual", False))
     use_class_cond = bool(cfg["tcst"].get("use_class_conditional", False))
-    if use_class_cond:
+    if use_hierarchical:
+        transform = HierarchicalSpectralTransform(
+            bands, num_classes=num_classes, K=cfg["tcst"]["K"],
+            residual_k=cfg["tcst"].get("residual_k", 2),
+            rho_a=cfg["tcst"]["rho_a"], rho_b=cfg["tcst"]["rho_b"]).to(device)
+        _log(f"[transform] HIERARCHICAL: C={num_classes}, K={cfg['tcst']['K']}, "
+             f"residual_k={transform.residual_k}, dim={transform.dim}")
+    elif use_class_cond:
         transform = ClassSmoothSpectralTransform(
             bands, num_classes=num_classes, K=cfg["tcst"]["K"],
             rho_a=cfg["tcst"]["rho_a"], rho_b=cfg["tcst"]["rho_b"]).to(device)
@@ -853,6 +863,7 @@ def run_tcst_v8(cfg, device):
     _dom_rng = np.random.default_rng(cfg["output"]["seed"] + 777)
     _dom_idx = _dom_rng.choice(len(src_tr_p), min(128, len(src_tr_p)), replace=False)
     src_domain_cal_p = src_tr_p[_dom_idx]
+    src_domain_cal_y = src_tr_y[_dom_idx]
     ba_cs_ca_p, ba_cs_ca_y, ba_cs_counts = _sample_boundary_calibration(
         model, src_ca_p, src_ca_y,
         per_class=cfg["training"]["calibration_per_class"],
@@ -904,8 +915,9 @@ def run_tcst_v8(cfg, device):
         model.eval()
         qp = None
         
-        # 生成伪标签
-        if use_pseudo:
+        # Target predictions are unlabeled and shared by residual gating and pseudo-labels.
+        _probs = None
+        if use_pseudo or isinstance(transform, HierarchicalSpectralTransform):
             with torch.no_grad():
                 _probs_list = []
                 for _s in range(0, len(tgt_transport_p), 128):
@@ -913,30 +925,43 @@ def run_tcst_v8(cfg, device):
                     _lg = model(_xb).logits
                     _probs_list.append(torch.softmax(_lg.float(), dim=1).cpu())
                 _probs = torch.cat(_probs_list, 0)
-                _conf, _pl = _probs.max(1)
-                _thr = float(cfg["training"].get("pseudo_threshold", 0.8))
-                _conf = _conf.numpy()
-                _pl = _pl.numpy()
-                
-                # 类别均衡伪标签选择：每个类最多选 top_k 个高置信度样本
-                _per_class = int(cfg["training"].get("pseudo_per_class", 200))
-                _selected_idx = []
-                for _c in range(num_classes):
-                    _c_idx = np.where((_pl == _c) & (_conf >= _thr))[0]
-                    if len(_c_idx) > 0:
-                        _sorted_idx = _c_idx[np.argsort(-_conf[_c_idx])]
-                        _selected_idx.extend(_sorted_idx[:_per_class].tolist())
-                
-                if len(_selected_idx) > 0:
-                    _selected_idx = np.array(_selected_idx)
-                    pseudo_state["xb"] = tgt_transport_p[_selected_idx]
-                    pseudo_state["yb"] = _pl[_selected_idx].astype(np.int64)
-                    _counts = np.bincount(pseudo_state["yb"], minlength=num_classes).tolist()
-                    _log(f"  [Pseudo] CB-selected {len(_selected_idx)} samples, dist={_counts}")
-                else:
-                    pseudo_state["xb"] = None
-                    pseudo_state["yb"] = None
-                    _log(f"  [Pseudo] None selected (thr={_thr})")
+
+        if isinstance(transform, HierarchicalSpectralTransform):
+            _gates = transform.set_class_reliability(_probs)
+            _log(f"  [class-residual] reliability="
+                 f"{[round(float(x), 2) for x in _gates.tolist()]}")
+            with torch.no_grad():
+                _cal_probs = []
+                for _s in range(0, len(tgt_calibration_p), 128):
+                    _xb = torch.from_numpy(tgt_calibration_p[_s:_s+128]).to(device)
+                    _cal_probs.append(torch.softmax(model(_xb).logits.float(), dim=1).cpu())
+                target_cal_probs = torch.cat(_cal_probs, 0)
+
+        if use_pseudo:
+            _conf, _pl = _probs.max(1)
+            _thr = float(cfg["training"].get("pseudo_threshold", 0.8))
+            _conf = _conf.numpy()
+            _pl = _pl.numpy()
+
+            # 类别均衡伪标签选择：每个类最多选 top_k 个高置信度样本
+            _per_class = int(cfg["training"].get("pseudo_per_class", 200))
+            _selected_idx = []
+            for _c in range(num_classes):
+                _c_idx = np.where((_pl == _c) & (_conf >= _thr))[0]
+                if len(_c_idx) > 0:
+                    _sorted_idx = _c_idx[np.argsort(-_conf[_c_idx])]
+                    _selected_idx.extend(_sorted_idx[:_per_class].tolist())
+
+            if len(_selected_idx) > 0:
+                _selected_idx = np.array(_selected_idx)
+                pseudo_state["xb"] = tgt_transport_p[_selected_idx]
+                pseudo_state["yb"] = _pl[_selected_idx].astype(np.int64)
+                _counts = np.bincount(pseudo_state["yb"], minlength=num_classes).tolist()
+                _log(f"  [Pseudo] CB-selected {len(_selected_idx)} samples, dist={_counts}")
+            else:
+                pseudo_state["xb"] = None
+                pseudo_state["yb"] = None
+                _log(f"  [Pseudo] None selected (thr={_thr})")
 
         src_mmd_idx = _class_balanced_subsample(src_tr_y, 128,
                                                 seed=cfg["output"]["seed"] + 500 + cycle)
@@ -948,7 +973,11 @@ def run_tcst_v8(cfg, device):
         _tgt_idx = _tgt_rng.choice(len(tgt_transport_p), _n_tgt, replace=False)
         tgt_desc = spectral_descriptor(
             torch.from_numpy(tgt_transport_p[_tgt_idx]).to(device))
-        g_D, mmd0 = domain_gradient_mmd(transform, src_for_mmd, tgt_desc, source_labels=src_mmd_labels)
+        _target_probs = (_probs[_tgt_idx].to(device)
+                         if isinstance(transform, HierarchicalSpectralTransform) else None)
+        g_D, mmd0 = domain_gradient_mmd(
+            transform, src_for_mmd, tgt_desc, source_labels=src_mmd_labels,
+            target_class_probs=_target_probs)
         g_D_np = g_D.cpu().numpy().astype(np.float32)
         g_D_norm_raw = float(np.linalg.norm(g_D_np))
         _log(f"  [transport] MMD^2(phi=0)={mmd0:.4f}  ||g_D_raw||={g_D_norm_raw:.4e} "
@@ -989,12 +1018,134 @@ def run_tcst_v8(cfg, device):
                       "d_norm": float(np.linalg.norm(_d_raw)),
                       "slack_mean": 0.0, "slack_max": 0.0,
                       "num_constraints": int(G_np.shape[0])}
+            if use_hierarchical:
+                _global_dim = transform.global_dim
+                if _use_qp:
+                    global_qp = solve_margin_qp(
+                        g_D_np[:_global_dim], G_np[:, :_global_dim], m0_np, w_np,
+                        rho_m=cfg["tcst"]["rho_m"],
+                        lambda_d=cfg["tcst"]["lambda_d"],
+                        lambda_xi=cfg["tcst"]["lambda_xi"])
+                else:
+                    _global_grad = g_D_np[:_global_dim]
+                    _global_norm = float(np.linalg.norm(_global_grad))
+                    _global_d = -_global_grad / max(_global_norm, 1e-8)
+                    global_qp = {"status": "raw_gradient", "d": _global_d.astype(np.float32),
+                                 "directional_derivative": float(_global_grad @ _global_d),
+                                 "d_norm": float(np.linalg.norm(_global_d)),
+                                 "slack_mean": 0.0, "slack_max": 0.0,
+                                 "num_constraints": int(G_np.shape[0])}
+            else:
+                global_qp = qp
             _log(f"  [qp] {qp['status']}  ||d*||={qp['d_norm']:.4f}  "
                  f"<g_D,d*>={qp['directional_derivative']:+.4f}  "
                  f"slack_max={qp['slack_max']:.4f}")
             # I1 fix: raw_gradient 也允许进入 Risk Search（不是拦截）
             _acceptable_status = ("optimal", "optimal_inaccurate", "no_constraints", "raw_gradient")
-            if qp["status"] not in _acceptable_status or qp["d_norm"] < 1e-8:
+            if use_hierarchical:
+                phi_star = torch.zeros(transform.dim, device=device)
+                _global_eta = 0.0
+                class_residual_diags = []
+                global_diag = {"accepted_eta": 0.0, "candidates": [],
+                               "accepted_candidate": None}
+                if (global_qp["status"] in _acceptable_status
+                        and global_qp["d_norm"] >= 1e-8):
+                    global_direction = np.zeros(transform.dim, dtype=np.float32)
+                    global_direction[:transform.global_dim] = global_qp["d"]
+                    if bool(cfg["tcst"].get("use_risk_search", True)):
+                        _global_eta, phi_star, global_diag = backtracking_search(
+                            model, transform, global_direction,
+                            src_ca_p, src_ca_y, tgt_calibration_p,
+                            eta_candidates=cfg["tcst"]["eta_candidates"],
+                            tau_sem=cfg["tcst"]["tau_sem"],
+                            tau_flip=cfg["tcst"]["tau_flip"],
+                            tau_class_flip=cfg["tcst"]["tau_class_flip"],
+                            tau_swd_rel=cfg["tcst"].get("tau_swd_rel", 0.01),
+                            device=device, swd_seed=cfg["output"]["seed"] + cycle,
+                            gain_tv_max=float(cfg["tcst"].get("gain_tv_max", 0.36)),
+                            offset_tv_max=float(cfg["tcst"].get("offset_tv_max", 0.18)),
+                            rel_change_max=float(cfg["tcst"].get("rel_change_max", 0.15)),
+                            rsem_delta=float(cfg["tcst"].get("rsem_delta", 0.05)),
+                            domain_cal_patches=src_domain_cal_p)
+                    else:
+                        _global_eta = 1.0
+                        phi_star = torch.from_numpy(global_direction).to(device)
+                        global_diag = {"accepted_eta": 1.0, "skipped_risk_search": True,
+                                       "candidates": [], "accepted_candidate": None}
+
+                _full_qp_ok = qp["status"] in _acceptable_status
+                for c in range(num_classes):
+                    _r = transform.residual_k
+                    _alpha = transform.global_dim + c * _r
+                    _beta = transform.global_dim + num_classes * _r + c * _r
+                    _component_idx = np.r_[np.arange(_alpha, _alpha + _r),
+                                           np.arange(_beta, _beta + _r)]
+                    if _use_qp:
+                        _class_direction = (qp["d"][_component_idx] if _full_qp_ok else
+                                            np.zeros(len(_component_idx), dtype=np.float32))
+                    else:
+                        _class_grad = g_D_np[_component_idx]
+                        _class_norm = float(np.linalg.norm(_class_grad))
+                        _class_direction = (-_class_grad / max(_class_norm, 1e-8)).astype(np.float32)
+                    _class_norm = float(np.linalg.norm(_class_direction))
+                    if _class_norm < 1e-8:
+                        class_residual_diags.append({"class": c, "accepted_eta": 0.0,
+                                                    "skipped": "zero_or_failed_direction"})
+                        continue
+                    _direction = np.zeros(transform.dim, dtype=np.float32)
+                    _direction[_component_idx] = _class_direction
+                    if bool(cfg["tcst"].get("use_risk_search", True)):
+                        _class_eta, _class_phi, _class_diag = backtracking_search(
+                            model, transform, _direction,
+                            src_ca_p, src_ca_y, tgt_calibration_p,
+                            eta_candidates=cfg["tcst"]["eta_candidates"],
+                            tau_sem=cfg["tcst"]["tau_sem"],
+                            tau_flip=cfg["tcst"]["tau_flip"],
+                            tau_class_flip=cfg["tcst"]["tau_class_flip"],
+                            tau_swd_rel=cfg["tcst"].get("tau_swd_rel", 0.01),
+                            device=device, swd_seed=cfg["output"]["seed"] + cycle,
+                            gain_tv_max=float(cfg["tcst"].get("gain_tv_max", 0.36)),
+                            offset_tv_max=float(cfg["tcst"].get("offset_tv_max", 0.18)),
+                            rel_change_max=float(cfg["tcst"].get("rel_change_max", 0.15)),
+                            rsem_delta=float(cfg["tcst"].get("rsem_delta", 0.05)),
+                            domain_cal_patches=src_domain_cal_p,
+                            domain_cal_labels=src_domain_cal_y,
+                            base_phi=phi_star, risk_class=c,
+                            target_class_probs=target_cal_probs[:, c])
+                        phi_star = _class_phi
+                        class_residual_diags.append({"class": c,
+                                                     "accepted_eta": float(_class_eta),
+                                                     "diagnostics": _class_diag})
+                    else:
+                        _class_eta = 1.0
+                        phi_star += torch.from_numpy(_direction).to(device)
+                        class_residual_diags.append({"class": c, "accepted_eta": 1.0,
+                                                     "skipped_risk_search": True})
+
+                diag = global_diag
+                diag["global_accepted_eta"] = float(_global_eta)
+                diag["class_residuals"] = class_residual_diags
+                diag["accepted_eta"] = max(
+                    [float(_global_eta)] +
+                    [float(item.get("accepted_eta", 0.0)) for item in class_residual_diags])
+                if diag.get("accepted_candidate") is None and diag["accepted_eta"] > 0:
+                    _vc = np.zeros(num_classes, dtype=np.float64)
+                    for item in class_residual_diags:
+                        _accepted = item.get("diagnostics", {}).get("accepted_candidate")
+                        if _accepted is not None:
+                            _vc[item["class"]] = _accepted["Vc"][item["class"]]
+                    diag["accepted_candidate"] = {"Vc": _vc.tolist()}
+                if diag.get("accepted_candidate") is not None:
+                    _vc = diag["accepted_candidate"].get("Vc", [0.0] * num_classes)
+                    for item in class_residual_diags:
+                        _accepted = item.get("diagnostics", {}).get("accepted_candidate")
+                        if _accepted is not None:
+                            _vc[item["class"]] = _accepted["Vc"][item["class"]]
+                    diag["accepted_candidate"]["Vc"] = _vc
+                _log(f"  [risk] global_eta={_global_eta:.4f}  "
+                     f"accepted_residuals={[item['class'] for item in class_residual_diags if item.get('accepted_eta', 0) > 0]}  "
+                     f"phi_norm={float(phi_star.norm()):.4f}")
+            elif qp["status"] not in _acceptable_status or qp["d_norm"] < 1e-8:
                 phi_star = torch.zeros(transform.dim, device=device)
                 diag = {"qp_status": qp["status"], "d_norm": qp["d_norm"]}
             else:

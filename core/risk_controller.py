@@ -9,15 +9,18 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-from core.discrepancy import spectral_descriptor, sliced_wasserstein
+from core.discrepancy import mk_mmd2, spectral_descriptor, sliced_wasserstein
 
 
 @torch.no_grad()
-def _eval_margins(model, patches, labels, device):
+def _eval_margins(model, patches, labels, device, transform=None, phi=None):
     model.eval()
     logits_batches = []
     for start in range(0, len(patches), 128):
         batch = torch.from_numpy(patches[start:start+128]).to(device)
+        y = torch.from_numpy(labels[start:start+128]).long().to(device)
+        if transform is not None:
+            batch = transform(batch, phi, labels=y)
         logits_batches.append(model(batch).logits.float())
     logits = torch.cat(logits_batches, 0).cpu()
     y = torch.from_numpy(labels).long()
@@ -71,7 +74,9 @@ def backtracking_search(model, transform, d_star,
                         gain_max_dev=0.5, offset_max_abs=0.5,
                         gain_tv_max=0.36, offset_tv_max=0.18,
                         rel_change_max=0.15, rsem_delta=0.05,
-                        domain_cal_patches=None):
+                        domain_cal_patches=None, base_phi=None,
+                        risk_class=None, target_class_probs=None,
+                        domain_cal_labels=None):
     """Return (eta_star, phi_star, diagnostics).
 
     diagnostics["accepted_candidate"] = the candidate dict that was ACCEPTED,
@@ -85,10 +90,36 @@ def backtracking_search(model, transform, d_star,
     model.eval()
     d_star_t = torch.from_numpy(d_star).to(device)
     dim = transform.dim
+    base_phi = (torch.zeros(dim, device=device) if base_phi is None
+                else torch.as_tensor(base_phi, device=device, dtype=d_star_t.dtype))
+    if base_phi.numel() != dim or d_star_t.numel() != dim:
+        raise ValueError("base_phi and d_star must match transform.dim")
+
+    if risk_class is not None:
+        if target_class_probs is None or domain_cal_labels is None or domain_cal_patches is None:
+            raise ValueError("class residual search requires target probabilities and source domain labels")
+        target_class_probs = torch.as_tensor(
+            target_class_probs, device=device, dtype=torch.float32).reshape(-1)
+        if target_class_probs.numel() != len(target_cal_patches):
+            raise ValueError("target_class_probs must match target_cal_patches")
+        if (not torch.isfinite(target_class_probs).all() or (target_class_probs < 0).any()
+                or target_class_probs.sum() <= 0):
+            raise ValueError("target_class_probs must be finite, non-negative, and have positive mass")
+        if len(domain_cal_labels) != len(domain_cal_patches):
+            raise ValueError("domain_cal_labels must match domain_cal_patches")
+        source_class_mask = np.asarray(domain_cal_labels) == int(risk_class)
+        source_cal_mask = np.asarray(source_cal_labels) == int(risk_class)
+        if not source_class_mask.any() or not source_cal_mask.any():
+            return 0.0, base_phi, {
+                "accepted_candidate": None, "candidates": [],
+                "risk_class": int(risk_class),
+                "skipped": "no_source_calibration_support",
+            }
 
     with torch.no_grad():
         pred0, correct0, margin0 = _eval_margins(
-            model, source_cal_patches, source_cal_labels, device)
+            model, source_cal_patches, source_cal_labels, device,
+            transform=transform, phi=base_phi)
         # B4 fix: 用全部校准样本，不只前 64（HyRANK 144 个只用 44% 会低估真实 SWD）
         # T9: SWD 用独立的 domain calibration（如果提供），而非 BA-CS 边界样本
         _src_swd = domain_cal_patches if domain_cal_patches is not None else source_cal_patches
@@ -96,40 +127,54 @@ def backtracking_search(model, transform, d_star,
         tgt_desc = spectral_descriptor(torch.from_numpy(target_cal_patches).to(device))
         swd0 = sliced_wasserstein(src_desc0, tgt_desc, seed=swd_seed)
         swd0_safe = max(float(swd0), 1e-8)
+        if risk_class is not None:
+            source_labels_t = torch.as_tensor(domain_cal_labels, device=device).long()
+            source_class_idx = torch.as_tensor(
+                np.flatnonzero(source_class_mask), device=device, dtype=torch.long)
+            source_domain_t = torch.as_tensor(_src_swd, device=device)
+            class_source = source_domain_t.index_select(0, source_class_idx)
+            class_labels = source_labels_t.index_select(0, source_class_idx)
+            class_source = transform(class_source, base_phi, labels=class_labels)
+            class_desc0 = spectral_descriptor(class_source)
+            class_mmd0 = float(mk_mmd2(
+                class_desc0, tgt_desc, y_weights=target_class_probs).item())
+        else:
+            class_source = class_labels = class_desc0 = None
+            class_mmd0 = None
 
-    n_classes = int(source_cal_labels.max()) + 1
+    n_classes = (transform.num_classes if hasattr(transform, "num_classes")
+                 else int(source_cal_labels.max()) + 1)
     cal_counts = np.bincount(source_cal_labels, minlength=n_classes).astype(np.float64)
 
     diagnostics = {"swd_before": float(swd0), "candidates": [],
                    "cal_class_counts": cal_counts.tolist(),
-                   "accepted_candidate": None}
+                   "accepted_candidate": None, "risk_class": risk_class,
+                   "class_mmd_before": class_mmd0}
     best_rejected = None
 
     for eta in eta_candidates:
-        phi = eta * d_star_t
+        phi = base_phi + eta * d_star_t
         with torch.no_grad():
-            logits_batches = []
-            for start in range(0, len(source_cal_patches), 128):
-                xb = torch.from_numpy(source_cal_patches[start:start+128]).to(device)
-                yb = torch.from_numpy(source_cal_labels[start:start+128]).long().to(device)
-                logits_batches.append(model(transform(xb, phi, labels=yb)).logits.float())
-            logits1 = torch.cat(logits_batches, 0).cpu()
-            correct1 = logits1.argmax(1).eq(torch.from_numpy(source_cal_labels).long())
+            pred1, correct1, margin1 = _eval_margins(
+                model, source_cal_patches, source_cal_labels, device,
+                transform=transform, phi=phi)
 
-            new_err = (correct0 & (~correct1))
-            V = float(new_err.float().mean().item())
             y_t = torch.from_numpy(source_cal_labels).long()
+            risk_mask = (torch.ones_like(y_t, dtype=torch.bool) if risk_class is None
+                         else y_t.eq(int(risk_class)))
+            if not risk_mask.any():
+                raise ValueError(f"no source calibration samples for class {risk_class}")
+            new_err = correct0 & (~correct1) & risk_mask
+            V = float(new_err.float().sum().item() / risk_mask.sum().item())
             Vc = np.zeros(n_classes, dtype=np.float64)
             for c in range(n_classes):
                 if cal_counts[c] > 0:
                     Vc[c] = float((new_err & (y_t == c)).float().sum().item()) / cal_counts[c]
-            Vmax = float(Vc.max()) if Vc.size else 0.0
+            Vmax = float(Vc[int(risk_class)]) if risk_class is not None else \
+                (float(Vc.max()) if Vc.size else 0.0)
 
             # P2: 逐类 margin 变化（判断 MMD 降低是否伴随某些类恶化）
-            true_logit1 = logits1.gather(1, y_t[:, None]).squeeze(1)
-            other1 = logits1.clone(); other1.scatter_(1, y_t[:, None], -1e9)
-            margin1 = true_logit1 - other1.max(1).values
-            _margin_delta = (margin1 - margin0).numpy()  # 正=改善，负=恶化
+            _margin_delta = (margin1 - margin0).numpy()
             _per_class_margin = {}
             for c in range(n_classes):
                 m = (y_t == c).numpy()
@@ -141,10 +186,7 @@ def backtracking_search(model, transform, d_star,
                         "n": int(m.sum()),
                     }
 
-            true_logit1 = logits1.gather(1, y_t[:, None]).squeeze(1)
-            other1 = logits1.clone(); other1.scatter_(1, y_t[:, None], -1e9)
-            margin1 = true_logit1 - other1.max(1).values
-            Rsem = float((torch.relu((margin0 - margin1) - rsem_delta) ** 2).mean().item())
+            Rsem = float((torch.relu((margin0[risk_mask] - margin1[risk_mask]) - rsem_delta) ** 2).mean().item())
 
             _src_swd1 = domain_cal_patches if domain_cal_patches is not None else source_cal_patches
             src_desc1 = spectral_descriptor(
@@ -157,6 +199,15 @@ def backtracking_search(model, transform, d_star,
                 torch.from_numpy(source_cal_patches).to(device), phi,
                 labels=torch.from_numpy(source_cal_labels).long().to(device))
 
+            class_mmd1 = None
+            if risk_class is not None:
+                class_source1 = transform(
+                    source_domain_t.index_select(0, source_class_idx), phi,
+                    labels=class_labels)
+                class_mmd1 = float(mk_mmd2(
+                    spectral_descriptor(class_source1), tgt_desc,
+                    y_weights=target_class_probs).item())
+
             spec_ok, spec_reason = _check_spectral_plausibility(
                 spectral_diag, gain_max_dev, offset_max_abs,
                 gain_tv_max=gain_tv_max, offset_tv_max=offset_tv_max,
@@ -168,14 +219,20 @@ def backtracking_search(model, transform, d_star,
                     "Vc": Vc.tolist(),
                     "per_class_margin": _per_class_margin,
                     "phi_norm": float(phi.norm()), "spectral": spectral_diag,
-                    "spectral_ok": spec_ok, "spectral_reason": spec_reason}
+                    "spectral_ok": spec_ok, "spectral_reason": spec_reason,
+                    "risk_class": risk_class,
+                    "class_mmd_before": class_mmd0,
+                    "class_mmd_after": class_mmd1}
             diagnostics["candidates"].append(diag)
 
             reasons = []
             if V > tau_flip: reasons.append(f"V>{tau_flip}")
             if Vmax > tau_class_flip: reasons.append(f"Vmax>{tau_class_flip}")
             if Rsem > tau_sem: reasons.append(f"Rsem>{tau_sem}")
-            if swd_drop_rel < tau_swd_rel: reasons.append(f"swd_rel<{tau_swd_rel}")
+            if risk_class is None and swd_drop_rel < tau_swd_rel:
+                reasons.append(f"swd_rel<{tau_swd_rel}")
+            if (risk_class is not None and class_mmd1 > class_mmd0 + 1e-7):
+                reasons.append("class_mmd_not_improved")
             if not spec_ok: reasons.append(f"spectral:{spec_reason}")
 
             if not reasons:
@@ -192,4 +249,4 @@ def backtracking_search(model, transform, d_star,
                 best_rejected = diag
 
     diagnostics["best_rejected"] = best_rejected
-    return 0.0, torch.zeros(dim, device=device), diagnostics
+    return 0.0, base_phi, diagnostics
