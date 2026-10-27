@@ -45,7 +45,6 @@ training:
   lambda_spec: 0.5
   use_pseudo: false
 tcst:
-  use_class_conditional: true
   K: 8
   rho_a: 0.15
   rho_b: 0.15

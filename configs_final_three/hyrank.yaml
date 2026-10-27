@@ -48,7 +48,6 @@ training:
   pseudo_per_class: 200
   pseudo_weight: 0.5
 tcst:
-  use_class_conditional: true
   K: 8
   rho_a: 0.1
   rho_b: 0.1
