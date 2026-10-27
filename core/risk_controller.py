@@ -71,7 +71,7 @@ def backtracking_search(model, transform, d_star,
                         gain_max_dev=0.5, offset_max_abs=0.5,
                         gain_tv_max=0.36, offset_tv_max=0.18,
                         rel_change_max=0.15, rsem_delta=0.05,
-                        domain_cal_patches=None):
+                        domain_cal_patches=None, domain_cal_labels=None):
     """Return (eta_star, phi_star, diagnostics).
 
     diagnostics["accepted_candidate"] = the candidate dict that was ACCEPTED,
@@ -92,6 +92,10 @@ def backtracking_search(model, transform, d_star,
         # B4 fix: 用全部校准样本，不只前 64（HyRANK 144 个只用 44% 会低估真实 SWD）
         # T9: SWD 用独立的 domain calibration（如果提供），而非 BA-CS 边界样本
         _src_swd = domain_cal_patches if domain_cal_patches is not None else source_cal_patches
+        if domain_cal_labels is not None and len(domain_cal_labels) != len(_src_swd):
+            raise ValueError("domain_cal_labels must match domain_cal_patches")
+        _src_swd_labels = (torch.from_numpy(domain_cal_labels).long().to(device)
+                           if domain_cal_labels is not None else None)
         src_desc0 = spectral_descriptor(torch.from_numpy(_src_swd).to(device))
         tgt_desc = spectral_descriptor(torch.from_numpy(target_cal_patches).to(device))
         swd0 = sliced_wasserstein(src_desc0, tgt_desc, seed=swd_seed)
@@ -149,7 +153,7 @@ def backtracking_search(model, transform, d_star,
             _src_swd1 = domain_cal_patches if domain_cal_patches is not None else source_cal_patches
             src_desc1 = spectral_descriptor(
                 transform(torch.from_numpy(_src_swd1).to(device), phi,
-                          labels=None))
+                          labels=_src_swd_labels))
             swd1 = sliced_wasserstein(src_desc1, tgt_desc, seed=swd_seed)
             swd_drop = float(swd0 - swd1)
             swd_drop_rel = float(swd_drop / swd0_safe)

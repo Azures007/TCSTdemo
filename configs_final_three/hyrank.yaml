@@ -48,6 +48,8 @@ training:
   pseudo_per_class: 200
   pseudo_weight: 0.5
 tcst:
+  use_hierarchical_residual: true
+  residual_k: 2
   K: 8
   rho_a: 0.1
   rho_b: 0.1

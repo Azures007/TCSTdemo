@@ -45,6 +45,8 @@ training:
   lambda_spec: 0.5
   use_pseudo: false
 tcst:
+  use_hierarchical_residual: true
+  residual_k: 2
   K: 8
   rho_a: 0.15
   rho_b: 0.15
