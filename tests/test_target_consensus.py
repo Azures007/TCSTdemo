@@ -19,7 +19,7 @@ class TargetConsensusTests(unittest.TestCase):
         train.apply_cli_overrides(cfg, seed=42, save_dir="results/seed42")
         self.assertEqual(cfg["output"], {"seed": 42, "save_dir": "results/seed42"})
 
-    def test_target_consensus_requires_all_three_views_to_agree(self):
+    def test_target_consensus_keeps_two_view_agreement(self):
         context = torch.tensor([[8.0, 0.0], [0.0, 8.0], [2.0, 0.0]])
         spectral = torch.tensor([[7.0, 0.0], [8.0, 0.0], [1.5, 0.0]])
         fused = torch.tensor([[9.0, 0.0], [8.0, 0.0], [1.0, 0.0]])
@@ -27,8 +27,8 @@ class TargetConsensusTests(unittest.TestCase):
         probs, weights, agreement = discrepancy.target_consensus_statistics(
             context, spectral, fused, torch.tensor([1.0, 0.7, 0.3]))
 
-        self.assertEqual(agreement.tolist(), [True, False, True])
-        self.assertEqual(float(weights[1]), 0.0)
+        self.assertEqual(agreement.tolist(), [True, True, True])
+        self.assertGreater(float(weights[1]), 0.0)
         self.assertGreater(float(weights[0]), float(weights[2]))
         torch.testing.assert_close(probs.sum(dim=1), torch.ones(3))
 
@@ -43,6 +43,7 @@ class TargetConsensusTests(unittest.TestCase):
         self.assertTrue(torch.isfinite(probs).all())
         self.assertTrue(torch.isfinite(weights).all())
         self.assertFalse(bool(agreement[0]))
+        self.assertEqual(float(weights[0]), 0.0)
 
     def test_uniform_target_weights_preserve_original_mmd(self):
         torch.manual_seed(3)

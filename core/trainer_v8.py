@@ -938,10 +938,12 @@ def run_tcst_v8(cfg, device):
             _per_class = int(cfg["training"].get("pseudo_per_class", 200))
             _selected_idx = []
             for _c in range(num_classes):
-                _c_idx = np.where((_pl == _c) & (_conf >= _thr)
-                                  & _agreement & (_weights > 0))[0]
+                _c_idx = np.where((_pl == _c) & (_weights > 0))[0]
                 if len(_c_idx) > 0:
-                    _sorted_idx = _c_idx[np.argsort(-_weights[_c_idx])]
+                    _eligible = _c_idx[_conf[_c_idx] >= _thr]
+                    if len(_eligible) < min(32, len(_c_idx)):
+                        _eligible = _c_idx
+                    _sorted_idx = _eligible[np.argsort(-(_weights[_eligible] * _conf[_eligible]))]
                     _selected_idx.extend(_sorted_idx[:_per_class].tolist())
 
             if len(_selected_idx) > 0:

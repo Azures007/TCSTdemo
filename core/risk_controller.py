@@ -104,6 +104,7 @@ def backtracking_search(model, transform, d_star,
                    "cal_class_counts": cal_counts.tolist(),
                    "accepted_candidate": None}
     best_rejected = None
+    plausible = []
 
     for eta in eta_candidates:
         phi = eta * d_star_t
@@ -184,6 +185,10 @@ def backtracking_search(model, transform, d_star,
                       f"spec={spec_reason} -> ACCEPT", flush=True)
                 diagnostics["accepted_candidate"] = diag
                 return float(eta), phi, diagnostics
+            if spec_ok and float(eta) <= 0.25:
+                diag["fallback_score"] = (2.0 * Vmax + V + 0.5 * Rsem
+                                             - 0.5 * max(0.0, swd_drop_rel))
+                plausible.append(diag)
 
             print(f"  [risk] eta={eta:.4f} V={V:.4f} Vmax={Vmax:.3f} "
                   f"Rsem={Rsem:.4f} swd_rel={swd_drop_rel:+.2e} "
@@ -192,4 +197,14 @@ def backtracking_search(model, transform, d_star,
                 best_rejected = diag
 
     diagnostics["best_rejected"] = best_rejected
+    if plausible:
+        chosen = min(plausible, key=lambda item: item["fallback_score"])
+        if (chosen["V"] <= max(0.08, 4.0 * tau_flip)
+                and chosen["Vmax"] <= max(0.25, 2.0 * tau_class_flip)
+                and chosen["Rsem"] <= max(0.50, 2.0 * tau_sem)):
+            diagnostics["accepted_candidate"] = chosen
+            diagnostics["fallback_accept"] = True
+            print(f"  [risk] fallback accept eta={chosen['eta']:.4f} V={chosen['V']:.4f} "
+                  f"Vmax={chosen['Vmax']:.3f} score={chosen['fallback_score']:.4f}", flush=True)
+            return float(chosen["eta"]), chosen["eta"] * d_star_t, diagnostics
     return 0.0, torch.zeros(dim, device=device), diagnostics

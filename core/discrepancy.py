@@ -130,7 +130,10 @@ def target_consensus_statistics(context_logits, spectral_logits, fused_logits,
         raise ValueError("target logits must be finite [samples, classes] matrices of equal shape")
     probabilities = [torch.softmax(value, dim=1) for value in logits]
     classes = [value.argmax(dim=1) for value in probabilities]
-    agreement = classes[0].eq(classes[1]) & classes[0].eq(classes[2])
+    agreement_count = (classes[0].eq(classes[1]).to(logits[0].dtype)
+                       + classes[0].eq(classes[2]).to(logits[0].dtype)
+                       + classes[1].eq(classes[2]).to(logits[0].dtype))
+    agreement = agreement_count >= 2
     consensus = torch.softmax(torch.stack([F.log_softmax(value, dim=1)
                                            for value in logits]).mean(0), dim=1)
     confidence = torch.stack([value.max(dim=1).values for value in probabilities]).amin(0)
@@ -138,7 +141,13 @@ def target_consensus_statistics(context_logits, spectral_logits, fused_logits,
         spectral_reliability, device=consensus.device, dtype=consensus.dtype).reshape(-1)
     if (reliability.numel() != consensus.size(0) or not torch.isfinite(reliability).all()):
         raise ValueError("spectral_reliability must be finite and match target samples")
-    weights = agreement.to(consensus.dtype) * confidence * reliability.clamp(0.0, 1.0)
+    agreement_fraction = torch.where(agreement,
+                                    torch.where(agreement_count >= 3,
+                                                torch.ones_like(agreement_count),
+                                                torch.full_like(agreement_count, 2.0 / 3.0)),
+                                    torch.zeros_like(agreement_count))
+    weights = (0.25 + 0.75 * agreement_fraction) * confidence * reliability.clamp(0.0, 1.0)
+    weights = torch.where(agreement, weights, torch.zeros_like(weights))
     return consensus, weights, agreement
 
 
