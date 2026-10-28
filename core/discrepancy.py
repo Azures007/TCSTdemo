@@ -15,6 +15,57 @@ def spectral_descriptor(x, eps=1e-6):
     return torch.cat([mu, log_sigma, d1, d2], dim=1)
 
 
+@torch.no_grad()
+def build_spectral_shape_centroids(patches, labels, num_classes):
+    """Build source-only normalized spectral-shape centroids.
+
+    The descriptor is intentionally independent of learned network features;
+    it is used as a conservative second opinion for class-conditional shift.
+    """
+    patches = torch.as_tensor(patches).float()
+    labels = torch.as_tensor(labels).long().reshape(-1)
+    if patches.ndim != 4 or patches.size(0) != labels.numel():
+        raise ValueError("patches must be [N,B,H,W] and match labels")
+    if labels.numel() == 0 or labels.min() < 0 or labels.max() >= int(num_classes):
+        raise ValueError("labels must be non-empty and within num_classes")
+    desc = F.normalize(spectral_descriptor(patches), dim=1)
+    centers = desc.new_zeros((int(num_classes), desc.size(1)))
+    for c in range(int(num_classes)):
+        mask = labels == c
+        if mask.any():
+            centers[c] = F.normalize(desc[mask].mean(dim=0, keepdim=True), dim=1)[0]
+    return centers
+
+
+@torch.no_grad()
+def spectral_shape_posteriors(patches, centroids, temperature=0.15):
+    """Return finite class probabilities from normalized spectral shape distance."""
+    patches = torch.as_tensor(patches).float()
+    centroids = torch.as_tensor(centroids, device=patches.device).float()
+    temperature = float(temperature)
+    if patches.ndim != 4 or centroids.ndim != 2 or centroids.size(0) < 2:
+        raise ValueError("invalid patches/centroids shape")
+    if temperature <= 0 or centroids.size(1) != spectral_descriptor(patches[:1]).size(1):
+        raise ValueError("temperature must be positive and centroid dimensions must match")
+    desc = F.normalize(spectral_descriptor(patches), dim=1)
+    distances = 1.0 - desc @ F.normalize(centroids, dim=1).t()
+    return torch.softmax(-distances / temperature, dim=1)
+
+
+@torch.no_grad()
+def fuse_class_posteriors(consensus, shape, shape_weight=0.2):
+    """Geometrically fuse consensus and spectral-shape probabilities."""
+    consensus = torch.as_tensor(consensus).float()
+    shape = torch.as_tensor(shape, device=consensus.device).float()
+    w = float(shape_weight)
+    if consensus.ndim != 2 or shape.shape != consensus.shape or not 0.0 <= w <= 1.0:
+        raise ValueError("probabilities must have equal 2-D shapes and weight in [0,1]")
+    eps = torch.finfo(consensus.dtype).eps
+    fused = torch.exp((1.0 - w) * torch.log(consensus.clamp_min(eps))
+                      + w * torch.log(shape.clamp_min(eps)))
+    return fused / fused.sum(dim=1, keepdim=True).clamp_min(eps)
+
+
 def _sq_dist(x, y):
     xx = x.pow(2).sum(1, keepdim=True)
     yy = y.pow(2).sum(1, keepdim=True)

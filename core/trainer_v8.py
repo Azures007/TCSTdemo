@@ -41,7 +41,10 @@ from torch.optim import AdamW
 from core.data import (align_bands, build_patches, load_scene,
                        sample_unlabeled, _load_mat, _pick_2d)
 from core.discrepancy import (domain_gradient_mmd, spectral_descriptor,
-                              target_consensus_statistics)
+                              target_consensus_statistics,
+                              build_spectral_shape_centroids,
+                              spectral_shape_posteriors,
+                              fuse_class_posteriors)
 from core.metrics import classification_metrics, confusion_matrix
 from core.model import DualReliabilityEncoder
 from core.risk_controller import backtracking_search
@@ -624,6 +627,13 @@ def run_tcst_v8(cfg, device):
         _log(f"\n[RS-CRW] ENABLED: alpha={rs_crw_alpha}  min_cal={rs_crw_min_cal}  ema={rs_crw_ema}")
 
     model = _make_model(bands, num_classes, device, cfg=cfg)
+    use_shape_rescue = bool(cfg["training"].get("spectral_shape_rescue", False))
+    shape_centroids = None
+    if use_shape_rescue:
+        shape_centroids = build_spectral_shape_centroids(
+            torch.from_numpy(src_tr_p), torch.from_numpy(src_tr_y), num_classes)
+        _log(f"[spectral-shape] enabled, weight={float(cfg['training'].get('spectral_shape_weight', 0.2)):.3f} "
+             f"temp={float(cfg['training'].get('spectral_shape_temperature', 0.15)):.3f}")
 
     def _source_prototypes():
         """Build normalized class prototypes from labeled source features only."""
@@ -998,6 +1008,15 @@ def run_tcst_v8(cfg, device):
         _probs, _target_weights, _target_agreement = target_consensus_statistics(
             _context_all, _spectral_all, _fused_all,
             torch.cat(_spectral_reliability))
+        _shape_probs = None
+        if use_shape_rescue:
+            _shape_probs = spectral_shape_posteriors(
+                torch.from_numpy(tgt_transport_p[_target_eval_idx]), shape_centroids,
+                temperature=float(cfg["training"].get("spectral_shape_temperature", 0.15)))
+            _probs = fuse_class_posteriors(
+                _probs, _shape_probs,
+                shape_weight=float(cfg["training"].get("spectral_shape_weight", 0.2)))
+            _log(f"  [spectral-shape] confidence={float(_shape_probs.max(1).values.mean()):.3f}")
         _log(f"  [target-consensus] agreement={float(_target_agreement.float().mean()):.3f}  "
              f"reliable_weight={float(_target_weights.sum()):.1f}/{len(_target_weights)}")
 
@@ -1015,15 +1034,27 @@ def run_tcst_v8(cfg, device):
             _student_fused_conf = _student_fused_conf_t.numpy()
             _student_fused_pl = _student_fused_pl_t.numpy()
             _teacher_agree = _teacher_student_agree.numpy()
+            _rescue_thr = float(cfg["training"].get("pseudo_rescue_threshold", 0.55))
+            if use_teacher_consistency:
+                _teacher_ok = (_teacher_agree
+                               & (_teacher_pl == _student_fused_pl)
+                               & (_teacher_conf >= _thr))
+                _teacher_rescue_ok = (_teacher_ok & (_teacher_conf >= _rescue_thr))
+            else:
+                _teacher_ok = np.ones_like(_teacher_agree, dtype=bool)
+                _teacher_rescue_ok = _teacher_ok
 
             # Main pseudo labels require all three views to agree. Two-view samples
             # remain available to MMD, but do not directly train the classifier.
             _per_class = int(cfg["training"].get("pseudo_per_class", 200))
             _rescue_min_main = int(cfg["training"].get("pseudo_rescue_min_main", 32))
             _rescue_per_class = int(cfg["training"].get("pseudo_rescue_per_class", 16))
-            _rescue_thr = float(cfg["training"].get("pseudo_rescue_threshold", 0.55))
             _rescue_margin = float(cfg["training"].get("pseudo_rescue_margin", 0.05))
             _rescue_weight = float(cfg["training"].get("pseudo_rescue_weight", 0.1))
+            _shape_np = _shape_probs.numpy() if use_shape_rescue else None
+            if use_shape_rescue:
+                _shape_conf = _shape_np.max(axis=1)
+                _shape_pl = _shape_np.argmax(axis=1)
             _selected_idx, _selected_y, _selected_w = [], [], []
             _main_counts = np.zeros(num_classes, dtype=np.int64)
             _rescue_counts = np.zeros(num_classes, dtype=np.int64)
@@ -1031,9 +1062,7 @@ def run_tcst_v8(cfg, device):
             for _c in range(num_classes):
                 _c_idx = np.where((_pl == _c) & (_all_agree)
                                   & (_conf >= _thr) & (_weights > 0)
-                                  & _teacher_agree
-                                  & (_teacher_pl == _c)
-                                  & (_teacher_conf >= _thr)
+                                  & _teacher_ok
                                   & (_student_fused_pl == _c))[0]
                 if len(_c_idx) > 0:
                     _sorted_idx = _c_idx[np.argsort(-(_weights[_c_idx] * _conf[_c_idx]))]
@@ -1051,20 +1080,34 @@ def run_tcst_v8(cfg, device):
                     _other = _probs.numpy().copy()
                     _other[:, _c] = -np.inf
                     _margin = _pc - np.max(_other, axis=1)
+                    _shape_ok = np.ones_like(_agreement, dtype=bool)
+                    if use_shape_rescue:
+                        _shape_margin = _shape_np[:, _c] - np.max(
+                            np.where(np.arange(num_classes)[None, :] == _c, -np.inf, _shape_np), axis=1)
+                        _shape_ok = ((_shape_pl == _c)
+                                     & (_shape_conf >= float(cfg["training"].get("spectral_shape_rescue_threshold", 0.55)))
+                                     & (_shape_margin >= float(cfg["training"].get("spectral_shape_rescue_margin", 0.03))))
+                    _shape_label_ok = use_shape_rescue & _shape_ok
                     _r_idx = np.where((_agreement) & (_weights > 0)
-                                      & _teacher_agree
-                                      & (_teacher_pl == _c)
-                                      & (_student_fused_pl == _c)
-                                      & (_teacher_conf >= _rescue_thr)
+                                      & _teacher_ok
+                                      & ((_student_fused_pl == _c) | _shape_label_ok)
+                                      & _teacher_rescue_ok
                                       & (_student_fused_conf >= _rescue_thr)
-                                      & (_margin >= _rescue_margin))[0]
+                                      & _shape_ok
+                                      & ((_margin >= _rescue_margin) | _shape_label_ok))[0]
                     _r_idx = np.asarray([i for i in _r_idx if int(i) not in _main_index_set])
                     if len(_r_idx) > 0:
-                        _r_idx = _r_idx[np.argsort(-(_pc[_r_idx] * _weights[_r_idx]))]
+                        _score = _pc
+                        if use_shape_rescue:
+                            _score = np.maximum(_score, _shape_np[:, _c])
+                        _r_idx = _r_idx[np.argsort(-(_score[_r_idx] * _weights[_r_idx]))]
                         _r_idx = _r_idx[:_rescue_per_class]
                         _selected_idx.extend(_r_idx.tolist())
                         _selected_y.extend([_c] * len(_r_idx))
-                        _selected_w.extend([_rescue_weight] * len(_r_idx))
+                        _selected_w.extend([
+                            float(cfg["training"].get("spectral_shape_rescue_weight", _rescue_weight))
+                            if use_shape_rescue else _rescue_weight
+                        ] * len(_r_idx))
                         _rescue_counts[_c] = len(_r_idx)
 
             if len(_selected_idx) > 0:

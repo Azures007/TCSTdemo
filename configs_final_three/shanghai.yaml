@@ -52,8 +52,14 @@ training:
   pseudo_rescue_margin: 0.05
   pseudo_rescue_weight: 0.1
   use_prototype_gate: false
-  teacher_consistency: true
+  teacher_consistency: false
   teacher_momentum: 0.995
+  spectral_shape_rescue: true
+  spectral_shape_weight: 0.30
+  spectral_shape_temperature: 0.10
+  spectral_shape_rescue_threshold: 0.52
+  spectral_shape_rescue_margin: 0.02
+  spectral_shape_rescue_weight: 0.08
   pseudo_threshold: 0.88
   pseudo_weight: 0.20
   source_rollback_drop: 0

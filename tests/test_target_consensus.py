@@ -45,6 +45,19 @@ class TargetConsensusTests(unittest.TestCase):
         self.assertFalse(bool(agreement[0]))
         self.assertEqual(float(weights[0]), 0.0)
 
+    def test_spectral_shape_posteriors_are_normalized_and_class_sensitive(self):
+        source = torch.zeros(4, 4, 3, 3)
+        source[0:2, :, :, :] = torch.tensor([1.0, 2.0, 3.0, 4.0]).view(1, 4, 1, 1)
+        source[2:4, :, :, :] = torch.tensor([4.0, 3.0, 2.0, 1.0]).view(1, 4, 1, 1)
+        labels = torch.tensor([0, 0, 1, 1])
+        centers = discrepancy.build_spectral_shape_centroids(source, labels, 2)
+        target = torch.cat([source[:1], source[2:3]], dim=0)
+        probs = discrepancy.spectral_shape_posteriors(target, centers, temperature=0.05)
+        self.assertEqual(tuple(probs.shape), (2, 2))
+        torch.testing.assert_close(probs.sum(dim=1), torch.ones(2))
+        self.assertGreater(float(probs[0, 0]), float(probs[0, 1]))
+        self.assertGreater(float(probs[1, 1]), float(probs[1, 0]))
+
     def test_uniform_target_weights_preserve_original_mmd(self):
         torch.manual_seed(3)
         source = torch.randn(8, 12)
