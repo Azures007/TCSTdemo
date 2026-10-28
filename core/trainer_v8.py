@@ -603,7 +603,7 @@ def run_tcst_v8(cfg, device):
 
     use_rs_crw = bool(cfg["tcst"].get("use_rs_crw", False))
     use_pseudo = bool(cfg["training"].get("use_pseudo", False))
-    pseudo_state = {"xb": None, "yb": None}
+    pseudo_state = {"xb": None, "yb": None, "weights": None}
     if use_pseudo:
         _log(f"[Pseudo] enabled, thr={cfg['training'].get('pseudo_threshold', 0.9)}, weight={cfg['training'].get('pseudo_weight', 0.5)}")
     use_ba_cs = bool(cfg["training"].get("use_ba_cs", True))
@@ -701,6 +701,14 @@ def run_tcst_v8(cfg, device):
         pt = torch.exp(-ce)
         return (((1 - pt) ** gamma) * ce).mean()
 
+    def _pseudo_loss(logits, targets, weights, gamma=0.0):
+        ce = F.cross_entropy(logits, targets, reduction='none',
+                             label_smoothing=label_smoothing_value)
+        if gamma > 0:
+            ce = (1 - torch.exp(-ce)).pow(gamma) * ce
+        w = weights.to(device=logits.device, dtype=ce.dtype)
+        return (ce * w).sum() / w.sum().clamp_min(1e-6)
+
     def _train_step(patches, labels, phi_star, safe_w):
         model.train(); optimizer.zero_grad(set_to_none=True)
         if isinstance(patches, np.ndarray):
@@ -753,12 +761,15 @@ def run_tcst_v8(cfg, device):
                 idx_p = np.random.choice(len(pseudo_state["xb"]), pb_size, replace=True)
                 p_xb = torch.from_numpy(pseudo_state["xb"][idx_p]).to(device)
                 p_yb = torch.from_numpy(pseudo_state["yb"][idx_p]).to(device)
+                p_w = torch.from_numpy(pseudo_state["weights"][idx_p]).to(device)
                 pseudo_w = float(cfg["training"].get("pseudo_weight", 0.5))
                 
                 out_pseudo = model(p_xb)
-                loss_pseudo = _ce(out_pseudo.logits, p_yb)
+                loss_pseudo = _pseudo_loss(out_pseudo.logits, p_yb, p_w,
+                                           gamma=focal_gamma)
                 if _lambda_spec > 0:
-                    loss_pseudo += _lambda_spec * _ce(out_pseudo.spectral_logits, p_yb)
+                    loss_pseudo += _lambda_spec * _pseudo_loss(
+                        out_pseudo.spectral_logits, p_yb, p_w, gamma=focal_gamma)
                 loss = loss + pseudo_w * loss_pseudo
 
         scaler.scale(loss).backward()
@@ -920,9 +931,12 @@ def run_tcst_v8(cfg, device):
                 _spectral_logits.append(_out.spectral_logits.float().cpu())
                 _fused_logits.append(_out.logits.float().cpu())
                 _spectral_reliability.append(_out.spectral_reliability.float().cpu())
+        _context_all = torch.cat(_context_logits)
+        _spectral_all = torch.cat(_spectral_logits)
+        _fused_all = torch.cat(_fused_logits)
         _probs, _target_weights, _target_agreement = target_consensus_statistics(
-            torch.cat(_context_logits), torch.cat(_spectral_logits),
-            torch.cat(_fused_logits), torch.cat(_spectral_reliability))
+            _context_all, _spectral_all, _fused_all,
+            torch.cat(_spectral_reliability))
         _log(f"  [target-consensus] agreement={float(_target_agreement.float().mean()):.3f}  "
              f"reliable_weight={float(_target_weights.sum()):.1f}/{len(_target_weights)}")
 
@@ -933,29 +947,66 @@ def run_tcst_v8(cfg, device):
             _pl = _pl.numpy()
             _weights = _target_weights.numpy()
             _agreement = _target_agreement.numpy()
+            _all_agree = ((_context_all.argmax(1) == _spectral_all.argmax(1))
+                          & (_context_all.argmax(1) == _fused_all.argmax(1))).numpy()
 
-            # Keep only agreed predictions; rank candidates by confidence and model reliability.
+            # Main pseudo labels require all three views to agree. Two-view samples
+            # remain available to MMD, but do not directly train the classifier.
             _per_class = int(cfg["training"].get("pseudo_per_class", 200))
-            _selected_idx = []
+            _rescue_min_main = int(cfg["training"].get("pseudo_rescue_min_main", 32))
+            _rescue_per_class = int(cfg["training"].get("pseudo_rescue_per_class", 16))
+            _rescue_thr = float(cfg["training"].get("pseudo_rescue_threshold", 0.55))
+            _rescue_margin = float(cfg["training"].get("pseudo_rescue_margin", 0.05))
+            _rescue_weight = float(cfg["training"].get("pseudo_rescue_weight", 0.1))
+            _selected_idx, _selected_y, _selected_w = [], [], []
+            _main_counts = np.zeros(num_classes, dtype=np.int64)
+            _rescue_counts = np.zeros(num_classes, dtype=np.int64)
+            _main_index_set = set()
             for _c in range(num_classes):
-                _c_idx = np.where((_pl == _c) & (_weights > 0))[0]
+                _c_idx = np.where((_pl == _c) & (_all_agree)
+                                  & (_conf >= _thr) & (_weights > 0))[0]
                 if len(_c_idx) > 0:
-                    _eligible = _c_idx[_conf[_c_idx] >= _thr]
-                    if len(_eligible) < min(32, len(_c_idx)):
-                        _eligible = _c_idx
-                    _sorted_idx = _eligible[np.argsort(-(_weights[_eligible] * _conf[_eligible]))]
-                    _selected_idx.extend(_sorted_idx[:_per_class].tolist())
+                    _sorted_idx = _c_idx[np.argsort(-(_weights[_c_idx] * _conf[_c_idx]))]
+                    _sorted_idx = _sorted_idx[:_per_class]
+                    _selected_idx.extend(_sorted_idx.tolist())
+                    _selected_y.extend([_c] * len(_sorted_idx))
+                    _selected_w.extend([1.0] * len(_sorted_idx))
+                    _main_index_set.update(int(i) for i in _sorted_idx.tolist())
+                    _main_counts[_c] = len(_sorted_idx)
+
+                # Rescue only classes with weak main support. Require a confident,
+                # margin-separated consensus probability and use a low loss weight.
+                if _main_counts[_c] < _rescue_min_main and _rescue_per_class > 0:
+                    _pc = _probs[:, _c].numpy()
+                    _other = _probs.numpy().copy()
+                    _other[:, _c] = -np.inf
+                    _margin = _pc - np.max(_other, axis=1)
+                    _r_idx = np.where((_agreement) & (_weights > 0)
+                                      & (_pc >= _rescue_thr)
+                                      & (_margin >= _rescue_margin))[0]
+                    _r_idx = np.asarray([i for i in _r_idx if int(i) not in _main_index_set])
+                    if len(_r_idx) > 0:
+                        _r_idx = _r_idx[np.argsort(-(_pc[_r_idx] * _weights[_r_idx]))]
+                        _r_idx = _r_idx[:_rescue_per_class]
+                        _selected_idx.extend(_r_idx.tolist())
+                        _selected_y.extend([_c] * len(_r_idx))
+                        _selected_w.extend([_rescue_weight] * len(_r_idx))
+                        _rescue_counts[_c] = len(_r_idx)
 
             if len(_selected_idx) > 0:
                 _selected_idx = np.asarray(_selected_idx)
                 pseudo_state["xb"] = tgt_transport_p[_selected_idx]
-                pseudo_state["yb"] = _pl[_selected_idx].astype(np.int64)
+                pseudo_state["yb"] = np.asarray(_selected_y, dtype=np.int64)
+                pseudo_state["weights"] = np.asarray(_selected_w, dtype=np.float32)
                 _counts = np.bincount(pseudo_state["yb"], minlength=num_classes).tolist()
-                _log(f"  [Pseudo] consensus-selected {len(_selected_idx)} samples, dist={_counts}")
+                _log(f"  [Pseudo] main={int(_main_counts.sum())} rescue={int(_rescue_counts.sum())} "
+                     f"dist={_counts} main_dist={_main_counts.tolist()} "
+                     f"rescue_dist={_rescue_counts.tolist()}")
             else:
                 pseudo_state["xb"] = None
                 pseudo_state["yb"] = None
-                _log(f"  [Pseudo] None selected (thr={_thr}, three-view agreement required)")
+                pseudo_state["weights"] = None
+                _log(f"  [Pseudo] None selected (thr={_thr}, all-three agreement required)")
 
         src_mmd_idx = _class_balanced_subsample(src_tr_y, 128,
                                                 seed=cfg["output"]["seed"] + 500 + cycle)

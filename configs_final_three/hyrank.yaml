@@ -47,6 +47,11 @@ training:
   pseudo_threshold: 0.7
   pseudo_per_class: 200
   pseudo_weight: 0.5
+  pseudo_rescue_min_main: 32
+  pseudo_rescue_per_class: 16
+  pseudo_rescue_threshold: 0.55
+  pseudo_rescue_margin: 0.05
+  pseudo_rescue_weight: 0.1
 tcst:
   K: 8
   rho_a: 0.1
