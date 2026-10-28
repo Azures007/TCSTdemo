@@ -1064,7 +1064,7 @@ def run_tcst_v8(cfg, device):
             _prototypes_t, _prototype_counts = _source_prototypes()
             _prototypes = _prototypes_t.cpu().numpy()
             _prototype_present = _prototype_counts.cpu().numpy() > 0
-            _current_target_labels = _student_fused_pl.numpy()
+            _current_target_labels = _student_fused_pl
             _selected_idx, _selected_y, _selected_w = [], [], []
             _main_counts = np.zeros(num_classes, dtype=np.int64)
             _rescue_counts = np.zeros(num_classes, dtype=np.int64)
