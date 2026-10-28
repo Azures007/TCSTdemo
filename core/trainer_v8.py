@@ -933,6 +933,26 @@ def run_tcst_v8(cfg, device):
     cycle_ckpt_manifest = []
     best_global = {"src_val": best_src_val, "state": copy.deepcopy(model.state_dict()),
                    "source": "warmup", "cycle": None, "epoch": None}
+    teacher_model = copy.deepcopy(model).to(device)
+    teacher_model.eval()
+    for _p in teacher_model.parameters():
+        _p.requires_grad_(False)
+    teacher_momentum = float(cfg["training"].get("teacher_momentum", 0.99))
+    use_teacher_consistency = bool(cfg["training"].get("teacher_consistency", use_pseudo))
+    if use_teacher_consistency:
+        _log(f"[teacher] EMA enabled, momentum={teacher_momentum:.4f}")
+
+    def _update_teacher():
+        """EMA only parameters; copy non-floating buffers exactly."""
+        student_state = model.state_dict()
+        with torch.no_grad():
+            for _name, _t in teacher_model.state_dict().items():
+                _s = student_state[_name].detach()
+                if _t.is_floating_point():
+                    _t.mul_(teacher_momentum).add_(_s, alpha=1.0 - teacher_momentum)
+                else:
+                    _t.copy_(_s)
+        teacher_model.eval()
     # P1.2: D 模式的独立选择（合格条件 + NLL 排序）
     _d_tolerance = float(cfg["training"].get("ckpt_d_tolerance", 2.0))
     _d_base_src_val = float(best_src_val)  # warmup best 作为基准
@@ -942,17 +962,6 @@ def run_tcst_v8(cfg, device):
 
     for cycle in range(1, cfg["training"]["num_cycles"] + 1):
         _log(f"\n--- Cycle {cycle} ---")
-        _cycle_start_state = copy.deepcopy(model.state_dict())
-        _cycle_start_src_val = float(best_global["src_val"])
-        _cycle_start_best = {
-            "src_val": float(best_global["src_val"]),
-            "state": copy.deepcopy(best_global["state"]),
-            "source": best_global.get("source", "warmup"),
-            "cycle": best_global.get("cycle"),
-            "epoch": best_global.get("epoch"),
-        }
-        _cycle_rollback_drop = float(cfg["training"].get("source_rollback_drop", 0.0))
-        _cycle_rolled_back = False
         model.eval()
         qp = None
 
@@ -962,41 +971,30 @@ def run_tcst_v8(cfg, device):
         _tgt_idx = _tgt_rng.choice(len(tgt_transport_p), _n_tgt, replace=False)
         _target_eval_idx = (np.arange(len(tgt_transport_p)) if use_pseudo else _tgt_idx)
         _context_logits, _spectral_logits, _fused_logits, _spectral_reliability = [], [], [], []
+        _teacher_fused_logits = []
         with torch.no_grad():
             for _s in range(0, len(_target_eval_idx), 128):
                 _idx = _target_eval_idx[_s:_s+128]
                 _xb = torch.from_numpy(tgt_transport_p[_idx]).to(device)
                 _out = model(_xb)
+                _teacher_out = teacher_model(_xb)
                 _context_logits.append(_out.context_logits.float().cpu())
                 _spectral_logits.append(_out.spectral_logits.float().cpu())
                 _fused_logits.append(_out.logits.float().cpu())
                 _spectral_reliability.append(_out.spectral_reliability.float().cpu())
+                _teacher_fused_logits.append(_teacher_out.logits.float().cpu())
         _context_all = torch.cat(_context_logits)
         _spectral_all = torch.cat(_spectral_logits)
         _fused_all = torch.cat(_fused_logits)
-        _prototype_probs = None
-        _proto_pred = None
-        _proto_margin = None
-        _proto_conf = None
-        if use_prototype_gate and use_pseudo:
-            _target_features = []
-            with torch.no_grad():
-                for _s in range(0, len(_target_eval_idx), 128):
-                    _idx = _target_eval_idx[_s:_s+128]
-                    _target_features.append(model(
-                        torch.from_numpy(tgt_transport_p[_idx]).to(device)).features.float().cpu())
-            _target_features = torch.cat(_target_features)
-            _prototypes, _prototype_counts = _source_prototypes()
-            _prototype_probs = torch.softmax(
-                (_target_features.to(device) @ _prototypes.t()) /
-                max(prototype_temperature, 1e-4), dim=1).cpu()
-            _proto_pred = _prototype_probs.argmax(1).numpy()
-            _proto_sorted = torch.sort(_prototype_probs, dim=1, descending=True).values
-            _proto_margin = (_proto_sorted[:, 0] - _proto_sorted[:, 1]).numpy()
-            _proto_conf = _prototype_probs.max(1).values.numpy()
-            _log(f"  [prototype-gate] model_proto_agreement="
-                 f"{float((_proto_pred == _fused_all.argmax(1).numpy()).mean()):.3f} "
-                 f"source_counts={[int(x) for x in _prototype_counts.cpu().tolist()]}")
+        _teacher_all = torch.cat(_teacher_fused_logits)
+        _teacher_probs = torch.softmax(_teacher_all, dim=1)
+        _teacher_conf_t, _teacher_pl_t = _teacher_probs.max(1)
+        _student_fused_probs = torch.softmax(_fused_all, dim=1)
+        _student_fused_conf_t, _student_fused_pl_t = _student_fused_probs.max(1)
+        _teacher_student_agree = _teacher_pl_t.eq(_student_fused_pl_t)
+        if use_teacher_consistency and use_pseudo:
+            _log(f"  [teacher] student_agreement={float(_teacher_student_agree.float().mean()):.3f} "
+                 f"teacher_conf={float(_teacher_conf_t.mean()):.3f}")
         _probs, _target_weights, _target_agreement = target_consensus_statistics(
             _context_all, _spectral_all, _fused_all,
             torch.cat(_spectral_reliability))
@@ -1012,10 +1010,11 @@ def run_tcst_v8(cfg, device):
             _agreement = _target_agreement.numpy()
             _all_agree = ((_context_all.argmax(1) == _spectral_all.argmax(1))
                           & (_context_all.argmax(1) == _fused_all.argmax(1))).numpy()
-            if _proto_pred is None:
-                _proto_pred = _pl.copy()
-                _proto_margin = np.ones_like(_conf)
-                _proto_conf = _conf.copy()
+            _teacher_conf = _teacher_conf_t.numpy()
+            _teacher_pl = _teacher_pl_t.numpy()
+            _student_fused_conf = _student_fused_conf_t.numpy()
+            _student_fused_pl = _student_fused_pl_t.numpy()
+            _teacher_agree = _teacher_student_agree.numpy()
 
             # Main pseudo labels require all three views to agree. Two-view samples
             # remain available to MMD, but do not directly train the classifier.
@@ -1032,8 +1031,10 @@ def run_tcst_v8(cfg, device):
             for _c in range(num_classes):
                 _c_idx = np.where((_pl == _c) & (_all_agree)
                                   & (_conf >= _thr) & (_weights > 0)
-                                  & (_proto_pred == _c)
-                                  & (_proto_margin >= prototype_margin))[0]
+                                  & _teacher_agree
+                                  & (_teacher_pl == _c)
+                                  & (_teacher_conf >= _thr)
+                                  & (_student_fused_pl == _c))[0]
                 if len(_c_idx) > 0:
                     _sorted_idx = _c_idx[np.argsort(-(_weights[_c_idx] * _conf[_c_idx]))]
                     _sorted_idx = _sorted_idx[:_per_class]
@@ -1051,9 +1052,11 @@ def run_tcst_v8(cfg, device):
                     _other[:, _c] = -np.inf
                     _margin = _pc - np.max(_other, axis=1)
                     _r_idx = np.where((_agreement) & (_weights > 0)
-                                      & (_proto_pred == _c)
-                                      & (_proto_conf >= _rescue_thr)
-                                      & (_proto_margin >= _rescue_margin)
+                                      & _teacher_agree
+                                      & (_teacher_pl == _c)
+                                      & (_student_fused_pl == _c)
+                                      & (_teacher_conf >= _rescue_thr)
+                                      & (_student_fused_conf >= _rescue_thr)
                                       & (_margin >= _rescue_margin))[0]
                     _r_idx = np.asarray([i for i in _r_idx if int(i) not in _main_index_set])
                     if len(_r_idx) > 0:
@@ -1248,13 +1251,8 @@ def run_tcst_v8(cfg, device):
             if scheduler is not None:
                 scheduler.step(src_val) if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau) else scheduler.step()
 
-        if (_cycle_rollback_drop > 0 and src_val < _cycle_start_src_val - _cycle_rollback_drop):
-            model.load_state_dict(_cycle_start_state)
-            best_global = _cycle_start_best
-            pseudo_state = {"xb": None, "yb": None, "weights": None, "class_indices": None}
-            _cycle_rolled_back = True
-            _log(f"  [source-rollback] cycle={cycle} src_val={src_val:.2f} "
-                 f"start={_cycle_start_src_val:.2f} drop={_cycle_start_src_val - src_val:.2f}")
+        if use_teacher_consistency:
+            _update_teacher()
 
         if use_rs_crw:
             cands = diag.get("candidates", [])
@@ -1353,7 +1351,7 @@ def run_tcst_v8(cfg, device):
                             "accepted_eta": float(diag.get("accepted_eta", 0.0)),
                             "safe_executed_total": int(_total_safe),
                             "safe_batches_total": int(_total_batches),
-                            "source_rollback": bool(_cycle_rolled_back),
+                            "source_rollback": False,
                             "tgt_pred_dist": _tgt_pred_dist,
                             "class_risk_weights": [float(x) for x in class_risk_weights.tolist()] if use_rs_crw else None})
         with log_path.open("a", encoding="utf-8") as f:

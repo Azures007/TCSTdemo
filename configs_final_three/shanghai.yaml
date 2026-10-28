@@ -46,16 +46,17 @@ training:
   use_pseudo: true
   pseudo_threshold: 0.8
   pseudo_per_class: 200
-  pseudo_weight: 0.5
   pseudo_rescue_min_main: 32
   pseudo_rescue_per_class: 16
   pseudo_rescue_threshold: 0.55
   pseudo_rescue_margin: 0.05
   pseudo_rescue_weight: 0.1
-  use_prototype_gate: true
-  prototype_temperature: 0.12
-  prototype_margin: 0.03
-  source_rollback_drop: 1.5
+  use_prototype_gate: false
+  teacher_consistency: true
+  teacher_momentum: 0.995
+  pseudo_threshold: 0.88
+  pseudo_weight: 0.20
+  source_rollback_drop: 0
 tcst:
   K: 8
   rho_a: 0.1

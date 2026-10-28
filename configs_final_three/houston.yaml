@@ -44,7 +44,7 @@ training:
   ckpt_mode: D
   lambda_spec: 0.5
   use_pseudo: false
-  source_rollback_drop: 1.5
+  source_rollback_drop: 0
 tcst:
   K: 8
   rho_a: 0.15
