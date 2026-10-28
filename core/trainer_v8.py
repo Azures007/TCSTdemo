@@ -47,6 +47,7 @@ from core.discrepancy import (domain_gradient_mmd, spectral_descriptor,
                               fuse_class_posteriors)
 from core.metrics import classification_metrics, confusion_matrix
 from core.model import DualReliabilityEncoder
+from core.pseudo_sampling import sample_pseudo_indices
 from core.risk_controller import backtracking_search
 from core.spectral_transform import SmoothSpectralTransform, ClassSmoothSpectralTransform
 from core.task_geometry import compute_margin_gradients, select_constraint_samples
@@ -607,6 +608,7 @@ def run_tcst_v8(cfg, device):
     use_rs_crw = bool(cfg["tcst"].get("use_rs_crw", False))
     use_pseudo = bool(cfg["training"].get("use_pseudo", False))
     pseudo_state = {"xb": None, "yb": None, "weights": None, "class_indices": None}
+    pseudo_rng = np.random.default_rng(int(cfg["output"]["seed"]) + 3901)
     if use_pseudo:
         _log(f"[Pseudo] enabled, thr={cfg['training'].get('pseudo_threshold', 0.9)}, weight={cfg['training'].get('pseudo_weight', 0.5)}")
     use_ba_cs = bool(cfg["training"].get("use_ba_cs", True))
@@ -789,15 +791,19 @@ def run_tcst_v8(cfg, device):
             _use_pseudo = bool(cfg["training"].get("use_pseudo", False))
             if _use_pseudo and pseudo_state["xb"] is not None:
                 pb_size = xb.size(0)
-                class_indices = pseudo_state.get("class_indices")
-                if class_indices:
-                    present = np.asarray(sorted(class_indices), dtype=np.int64)
-                    draw_classes = np.random.choice(present, pb_size, replace=True)
-                    idx_p = np.asarray([
-                        np.random.choice(class_indices[int(c)]) for c in draw_classes
-                    ], dtype=np.int64)
+                if cfg["training"].get("pseudo_sampling", "class_balanced") == "pool_uniform":
+                    idx_p = sample_pseudo_indices(
+                        pseudo_state["yb"], pb_size, pseudo_rng, mode="pool_uniform")
                 else:
-                    idx_p = np.random.choice(len(pseudo_state["xb"]), pb_size, replace=True)
+                    class_indices = pseudo_state.get("class_indices")
+                    if class_indices:
+                        present = np.asarray(sorted(class_indices), dtype=np.int64)
+                        draw_classes = np.random.choice(present, pb_size, replace=True)
+                        idx_p = np.asarray([
+                            np.random.choice(class_indices[int(c)]) for c in draw_classes
+                        ], dtype=np.int64)
+                    else:
+                        idx_p = np.random.choice(len(pseudo_state["xb"]), pb_size, replace=True)
                 p_xb = torch.from_numpy(pseudo_state["xb"][idx_p]).to(device)
                 p_yb = torch.from_numpy(pseudo_state["yb"][idx_p]).to(device)
                 p_w = torch.from_numpy(pseudo_state["weights"][idx_p]).to(device)
@@ -818,6 +824,11 @@ def run_tcst_v8(cfg, device):
             "clean_loss": float(loss_clean.detach()),
             "safe_loss": float(loss_safe.detach()) if loss_safe is not None else None,
             "safe_executed": _safe_executed,
+            "pseudo_draw_counts": (np.bincount(
+                pseudo_state["yb"][idx_p], minlength=num_classes).tolist()
+                if _use_pseudo and pseudo_state["xb"] is not None else None),
+            "pseudo_repeated_draws": (int(len(idx_p) - len(np.unique(idx_p)))
+                                      if _use_pseudo and pseudo_state["xb"] is not None else 0),
         }
 
     # ------------- warm-up -------------
@@ -1115,6 +1126,9 @@ def run_tcst_v8(cfg, device):
                 pseudo_state["xb"] = tgt_transport_p[_selected_idx]
                 pseudo_state["yb"] = np.asarray(_selected_y, dtype=np.int64)
                 pseudo_state["weights"] = np.asarray(_selected_w, dtype=np.float32)
+                pseudo_state["counts"] = np.bincount(pseudo_state["yb"], minlength=num_classes).tolist()
+                pseudo_state["weight_sums"] = np.bincount(
+                    pseudo_state["yb"], weights=pseudo_state["weights"], minlength=num_classes).tolist()
                 pseudo_state["class_indices"] = {
                     int(c): np.where(pseudo_state["yb"] == c)[0]
                     for c in np.unique(pseudo_state["yb"])
@@ -1128,6 +1142,8 @@ def run_tcst_v8(cfg, device):
                 pseudo_state["yb"] = None
                 pseudo_state["weights"] = None
                 pseudo_state["class_indices"] = None
+                pseudo_state["counts"] = [0] * num_classes
+                pseudo_state["weight_sums"] = [0.0] * num_classes
                 _log(f"  [Pseudo] None selected (thr={_thr}, all-three agreement required)")
 
         src_mmd_idx = _class_balanced_subsample(src_tr_y, 128,
@@ -1246,6 +1262,12 @@ def run_tcst_v8(cfg, device):
             _safe_count = sum(1 for l in losses if l.get("safe_executed", False))
             _safe_losses = [l["safe_loss"] for l in losses if l.get("safe_loss") is not None]
             _clean_losses = [l["clean_loss"] for l in losses]
+            _pseudo_draw_counts = np.sum([
+                l["pseudo_draw_counts"] for l in losses
+                if l["pseudo_draw_counts"] is not None
+            ], axis=0).astype(int).tolist() if any(
+                l["pseudo_draw_counts"] is not None for l in losses) else [0] * num_classes
+            _pseudo_repeats = sum(l["pseudo_repeated_draws"] for l in losses)
             src_val, _cyc_details = _eval_source(
                 model, src_val_p, src_val_y, device,
                 use_cb_val=cfg["training"].get("use_cb_val", False),
@@ -1265,6 +1287,8 @@ def run_tcst_v8(cfg, device):
                 "safe_executed_count": _safe_count,
                 "aug_executed_count": _aug_count_cyc,
                 "safe_total_batches": len(losses),
+                "pseudo_draw_counts": _pseudo_draw_counts,
+                "pseudo_repeated_draws": int(_pseudo_repeats),
                 "is_best": False,
             }
             if src_val > best_global["src_val"]:
@@ -1290,7 +1314,8 @@ def run_tcst_v8(cfg, device):
             _log(f"    cyc{cycle} ep{ep:02d}  loss={np.mean([l['loss'] for l in losses]):.4f}  "
                  f"lr={optimizer.param_groups[0]['lr']:.2e}  "
                  f"src_val={src_val:.2f}  best={best_global['src_val']:.2f}  "
-                 f"aug={_aug_count_cyc}/{len(losses)}  safe={_safe_count}/{len(losses)}{marker}")
+                 f"aug={_aug_count_cyc}/{len(losses)}  safe={_safe_count}/{len(losses)}  "
+                 f"pseudo_draws={_pseudo_draw_counts} repeats={_pseudo_repeats}{marker}")
             if scheduler is not None:
                 scheduler.step(src_val) if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau) else scheduler.step()
 
@@ -1400,6 +1425,8 @@ def run_tcst_v8(cfg, device):
         with log_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps({"stage": "cycle", "cycle": cycle,
                                 "transport": diag,
+                                "pseudo_pool_counts": pseudo_state.get("counts", [0] * num_classes),
+                                "pseudo_pool_weight_sums": pseudo_state.get("weight_sums", [0.0] * num_classes),
                                 "phi_star_stats": _a12_phi_stats,
                                 "d_star_stats": _a12_d_stats,
                                 "phi_star_full": _a12_phi_full,

@@ -62,6 +62,7 @@ training:
   spectral_shape_rescue_weight: 0.08
   pseudo_threshold: 0.88
   pseudo_weight: 0.20
+  pseudo_sampling: pool_uniform
   source_rollback_drop: 0
 tcst:
   K: 8
