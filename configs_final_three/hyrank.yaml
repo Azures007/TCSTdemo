@@ -58,6 +58,7 @@ training:
   spectral_shape_temperature: 0.15
   spectral_shape_rescue_threshold: 0.55
   spectral_shape_rescue_margin: 0.03
+  spectral_shape_view_threshold: 0.55
   spectral_shape_rescue_weight: 0.08
   pseudo_threshold: 0.80
   pseudo_weight: 0.25
