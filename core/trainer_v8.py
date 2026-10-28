@@ -603,7 +603,7 @@ def run_tcst_v8(cfg, device):
 
     use_rs_crw = bool(cfg["tcst"].get("use_rs_crw", False))
     use_pseudo = bool(cfg["training"].get("use_pseudo", False))
-    pseudo_state = {"xb": None, "yb": None, "weights": None}
+    pseudo_state = {"xb": None, "yb": None, "weights": None, "class_indices": None}
     if use_pseudo:
         _log(f"[Pseudo] enabled, thr={cfg['training'].get('pseudo_threshold', 0.9)}, weight={cfg['training'].get('pseudo_weight', 0.5)}")
     use_ba_cs = bool(cfg["training"].get("use_ba_cs", True))
@@ -624,6 +624,27 @@ def run_tcst_v8(cfg, device):
         _log(f"\n[RS-CRW] ENABLED: alpha={rs_crw_alpha}  min_cal={rs_crw_min_cal}  ema={rs_crw_ema}")
 
     model = _make_model(bands, num_classes, device, cfg=cfg)
+
+    def _source_prototypes():
+        """Build normalized class prototypes from labeled source features only."""
+        model.eval()
+        dim = int(cfg["training"].get("projection_dim", 128))
+        sums = torch.zeros(num_classes, dim, device=device)
+        counts = torch.zeros(num_classes, device=device)
+        with torch.no_grad():
+            for start in range(0, len(src_tr_p), 256):
+                xb = torch.from_numpy(src_tr_p[start:start + 256]).to(device)
+                yb = torch.from_numpy(src_tr_y[start:start + 256]).long().to(device)
+                feat = model(xb).features.float()
+                sums.index_add_(0, yb, feat)
+                counts.index_add_(0, yb, torch.ones_like(yb, dtype=counts.dtype))
+        return F.normalize(sums / counts.clamp_min(1.0).unsqueeze(1), dim=1), counts
+
+    use_prototype_gate = bool(cfg["training"].get("use_prototype_gate", use_pseudo))
+    prototype_temperature = float(cfg["training"].get("prototype_temperature", 0.12))
+    prototype_margin = float(cfg["training"].get("prototype_margin", 0.03))
+    if use_prototype_gate:
+        _log(f"[prototype-gate] enabled, temperature={prototype_temperature:.3f}, margin={prototype_margin:.3f}")
     use_class_cond = bool(cfg["tcst"].get("use_class_conditional", False))
     if use_class_cond:
         transform = ClassSmoothSpectralTransform(
@@ -707,7 +728,7 @@ def run_tcst_v8(cfg, device):
         if gamma > 0:
             ce = (1 - torch.exp(-ce)).pow(gamma) * ce
         w = weights.to(device=logits.device, dtype=ce.dtype)
-        return (ce * w).sum() / w.sum().clamp_min(1e-6)
+        return (ce * w).mean()
 
     def _train_step(patches, labels, phi_star, safe_w):
         model.train(); optimizer.zero_grad(set_to_none=True)
@@ -758,7 +779,15 @@ def run_tcst_v8(cfg, device):
             _use_pseudo = bool(cfg["training"].get("use_pseudo", False))
             if _use_pseudo and pseudo_state["xb"] is not None:
                 pb_size = xb.size(0)
-                idx_p = np.random.choice(len(pseudo_state["xb"]), pb_size, replace=True)
+                class_indices = pseudo_state.get("class_indices")
+                if class_indices:
+                    present = np.asarray(sorted(class_indices), dtype=np.int64)
+                    draw_classes = np.random.choice(present, pb_size, replace=True)
+                    idx_p = np.asarray([
+                        np.random.choice(class_indices[int(c)]) for c in draw_classes
+                    ], dtype=np.int64)
+                else:
+                    idx_p = np.random.choice(len(pseudo_state["xb"]), pb_size, replace=True)
                 p_xb = torch.from_numpy(pseudo_state["xb"][idx_p]).to(device)
                 p_yb = torch.from_numpy(pseudo_state["yb"][idx_p]).to(device)
                 p_w = torch.from_numpy(pseudo_state["weights"][idx_p]).to(device)
@@ -913,6 +942,17 @@ def run_tcst_v8(cfg, device):
 
     for cycle in range(1, cfg["training"]["num_cycles"] + 1):
         _log(f"\n--- Cycle {cycle} ---")
+        _cycle_start_state = copy.deepcopy(model.state_dict())
+        _cycle_start_src_val = float(best_global["src_val"])
+        _cycle_start_best = {
+            "src_val": float(best_global["src_val"]),
+            "state": copy.deepcopy(best_global["state"]),
+            "source": best_global.get("source", "warmup"),
+            "cycle": best_global.get("cycle"),
+            "epoch": best_global.get("epoch"),
+        }
+        _cycle_rollback_drop = float(cfg["training"].get("source_rollback_drop", 0.0))
+        _cycle_rolled_back = False
         model.eval()
         qp = None
 
@@ -934,6 +974,29 @@ def run_tcst_v8(cfg, device):
         _context_all = torch.cat(_context_logits)
         _spectral_all = torch.cat(_spectral_logits)
         _fused_all = torch.cat(_fused_logits)
+        _prototype_probs = None
+        _proto_pred = None
+        _proto_margin = None
+        _proto_conf = None
+        if use_prototype_gate and use_pseudo:
+            _target_features = []
+            with torch.no_grad():
+                for _s in range(0, len(_target_eval_idx), 128):
+                    _idx = _target_eval_idx[_s:_s+128]
+                    _target_features.append(model(
+                        torch.from_numpy(tgt_transport_p[_idx]).to(device)).features.float().cpu())
+            _target_features = torch.cat(_target_features)
+            _prototypes, _prototype_counts = _source_prototypes()
+            _prototype_probs = torch.softmax(
+                (_target_features.to(device) @ _prototypes.t()) /
+                max(prototype_temperature, 1e-4), dim=1).cpu()
+            _proto_pred = _prototype_probs.argmax(1).numpy()
+            _proto_sorted = torch.sort(_prototype_probs, dim=1, descending=True).values
+            _proto_margin = (_proto_sorted[:, 0] - _proto_sorted[:, 1]).numpy()
+            _proto_conf = _prototype_probs.max(1).values.numpy()
+            _log(f"  [prototype-gate] model_proto_agreement="
+                 f"{float((_proto_pred == _fused_all.argmax(1).numpy()).mean()):.3f} "
+                 f"source_counts={[int(x) for x in _prototype_counts.cpu().tolist()]}")
         _probs, _target_weights, _target_agreement = target_consensus_statistics(
             _context_all, _spectral_all, _fused_all,
             torch.cat(_spectral_reliability))
@@ -949,6 +1012,10 @@ def run_tcst_v8(cfg, device):
             _agreement = _target_agreement.numpy()
             _all_agree = ((_context_all.argmax(1) == _spectral_all.argmax(1))
                           & (_context_all.argmax(1) == _fused_all.argmax(1))).numpy()
+            if _proto_pred is None:
+                _proto_pred = _pl.copy()
+                _proto_margin = np.ones_like(_conf)
+                _proto_conf = _conf.copy()
 
             # Main pseudo labels require all three views to agree. Two-view samples
             # remain available to MMD, but do not directly train the classifier.
@@ -964,7 +1031,9 @@ def run_tcst_v8(cfg, device):
             _main_index_set = set()
             for _c in range(num_classes):
                 _c_idx = np.where((_pl == _c) & (_all_agree)
-                                  & (_conf >= _thr) & (_weights > 0))[0]
+                                  & (_conf >= _thr) & (_weights > 0)
+                                  & (_proto_pred == _c)
+                                  & (_proto_margin >= prototype_margin))[0]
                 if len(_c_idx) > 0:
                     _sorted_idx = _c_idx[np.argsort(-(_weights[_c_idx] * _conf[_c_idx]))]
                     _sorted_idx = _sorted_idx[:_per_class]
@@ -982,7 +1051,9 @@ def run_tcst_v8(cfg, device):
                     _other[:, _c] = -np.inf
                     _margin = _pc - np.max(_other, axis=1)
                     _r_idx = np.where((_agreement) & (_weights > 0)
-                                      & (_pc >= _rescue_thr)
+                                      & (_proto_pred == _c)
+                                      & (_proto_conf >= _rescue_thr)
+                                      & (_proto_margin >= _rescue_margin)
                                       & (_margin >= _rescue_margin))[0]
                     _r_idx = np.asarray([i for i in _r_idx if int(i) not in _main_index_set])
                     if len(_r_idx) > 0:
@@ -998,6 +1069,10 @@ def run_tcst_v8(cfg, device):
                 pseudo_state["xb"] = tgt_transport_p[_selected_idx]
                 pseudo_state["yb"] = np.asarray(_selected_y, dtype=np.int64)
                 pseudo_state["weights"] = np.asarray(_selected_w, dtype=np.float32)
+                pseudo_state["class_indices"] = {
+                    int(c): np.where(pseudo_state["yb"] == c)[0]
+                    for c in np.unique(pseudo_state["yb"])
+                }
                 _counts = np.bincount(pseudo_state["yb"], minlength=num_classes).tolist()
                 _log(f"  [Pseudo] main={int(_main_counts.sum())} rescue={int(_rescue_counts.sum())} "
                      f"dist={_counts} main_dist={_main_counts.tolist()} "
@@ -1006,6 +1081,7 @@ def run_tcst_v8(cfg, device):
                 pseudo_state["xb"] = None
                 pseudo_state["yb"] = None
                 pseudo_state["weights"] = None
+                pseudo_state["class_indices"] = None
                 _log(f"  [Pseudo] None selected (thr={_thr}, all-three agreement required)")
 
         src_mmd_idx = _class_balanced_subsample(src_tr_y, 128,
@@ -1172,6 +1248,14 @@ def run_tcst_v8(cfg, device):
             if scheduler is not None:
                 scheduler.step(src_val) if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau) else scheduler.step()
 
+        if (_cycle_rollback_drop > 0 and src_val < _cycle_start_src_val - _cycle_rollback_drop):
+            model.load_state_dict(_cycle_start_state)
+            best_global = _cycle_start_best
+            pseudo_state = {"xb": None, "yb": None, "weights": None, "class_indices": None}
+            _cycle_rolled_back = True
+            _log(f"  [source-rollback] cycle={cycle} src_val={src_val:.2f} "
+                 f"start={_cycle_start_src_val:.2f} drop={_cycle_start_src_val - src_val:.2f}")
+
         if use_rs_crw:
             cands = diag.get("candidates", [])
             cal_counts = diag.get("cal_class_counts", None)
@@ -1269,6 +1353,7 @@ def run_tcst_v8(cfg, device):
                             "accepted_eta": float(diag.get("accepted_eta", 0.0)),
                             "safe_executed_total": int(_total_safe),
                             "safe_batches_total": int(_total_batches),
+                            "source_rollback": bool(_cycle_rolled_back),
                             "tgt_pred_dist": _tgt_pred_dist,
                             "class_risk_weights": [float(x) for x in class_risk_weights.tolist()] if use_rs_crw else None})
         with log_path.open("a", encoding="utf-8") as f:

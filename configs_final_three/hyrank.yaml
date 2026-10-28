@@ -52,6 +52,10 @@ training:
   pseudo_rescue_threshold: 0.55
   pseudo_rescue_margin: 0.05
   pseudo_rescue_weight: 0.1
+  use_prototype_gate: true
+  prototype_temperature: 0.12
+  prototype_margin: 0.03
+  source_rollback_drop: 1.5
 tcst:
   K: 8
   rho_a: 0.1
