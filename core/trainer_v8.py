@@ -47,7 +47,8 @@ from core.discrepancy import (domain_gradient_mmd, spectral_descriptor,
                               fuse_class_posteriors)
 from core.metrics import classification_metrics, confusion_matrix
 from core.model import DualReliabilityEncoder
-from core.pseudo_sampling import sample_pseudo_indices, select_shape_rescue_indices
+from core.pseudo_sampling import (sample_pseudo_indices,
+                                   select_anchored_rescue_indices)
 from core.risk_controller import backtracking_search
 from core.spectral_transform import SmoothSpectralTransform, ClassSmoothSpectralTransform
 from core.task_geometry import compute_margin_gradients, select_constraint_samples
@@ -636,6 +637,7 @@ def run_tcst_v8(cfg, device):
             torch.from_numpy(src_tr_p), torch.from_numpy(src_tr_y), num_classes)
         _log(f"[spectral-shape] enabled, weight={float(cfg['training'].get('spectral_shape_weight', 0.2)):.3f} "
              f"temp={float(cfg['training'].get('spectral_shape_temperature', 0.15)):.3f}")
+    previous_target_labels = None
 
     def _source_prototypes():
         """Build normalized class prototypes from labeled source features only."""
@@ -980,6 +982,7 @@ def run_tcst_v8(cfg, device):
         _tgt_idx = _tgt_rng.choice(len(tgt_transport_p), _n_tgt, replace=False)
         _target_eval_idx = (np.arange(len(tgt_transport_p)) if use_pseudo else _tgt_idx)
         _context_logits, _spectral_logits, _fused_logits, _spectral_reliability = [], [], [], []
+        _target_features = []
         _teacher_fused_logits = []
         with torch.no_grad():
             for _s in range(0, len(_target_eval_idx), 128):
@@ -990,11 +993,13 @@ def run_tcst_v8(cfg, device):
                 _context_logits.append(_out.context_logits.float().cpu())
                 _spectral_logits.append(_out.spectral_logits.float().cpu())
                 _fused_logits.append(_out.logits.float().cpu())
+                _target_features.append(_out.features.float().cpu())
                 _spectral_reliability.append(_out.spectral_reliability.float().cpu())
                 _teacher_fused_logits.append(_teacher_out.logits.float().cpu())
         _context_all = torch.cat(_context_logits)
         _spectral_all = torch.cat(_spectral_logits)
         _fused_all = torch.cat(_fused_logits)
+        _target_features_all = torch.cat(_target_features).numpy()
         _teacher_all = torch.cat(_teacher_fused_logits)
         _teacher_probs = torch.softmax(_teacher_all, dim=1)
         _teacher_conf_t, _teacher_pl_t = _teacher_probs.max(1)
@@ -1056,6 +1061,10 @@ def run_tcst_v8(cfg, device):
                 torch.softmax(_spectral_all, dim=1).numpy(),
                 torch.softmax(_fused_all, dim=1).numpy(),
             ]) if use_shape_rescue else None
+            _prototypes_t, _prototype_counts = _source_prototypes()
+            _prototypes = _prototypes_t.cpu().numpy()
+            _prototype_present = _prototype_counts.cpu().numpy() > 0
+            _current_target_labels = _student_fused_pl.numpy()
             _selected_idx, _selected_y, _selected_w = [], [], []
             _main_counts = np.zeros(num_classes, dtype=np.int64)
             _rescue_counts = np.zeros(num_classes, dtype=np.int64)
@@ -1082,12 +1091,17 @@ def run_tcst_v8(cfg, device):
                     _other[:, _c] = -np.inf
                     _margin = _pc - np.max(_other, axis=1)
                     if use_shape_rescue:
-                        _r_idx = select_shape_rescue_indices(
-                            _shape_np, _view_probs, _c,
-                            min_shape_confidence=float(cfg["training"].get("spectral_shape_rescue_threshold", 0.55)),
-                            min_shape_margin=float(cfg["training"].get("spectral_shape_rescue_margin", 0.03)),
-                            min_view_confidence=float(cfg["training"].get("spectral_shape_view_threshold", 0.55)),
+                        _r_idx = select_anchored_rescue_indices(
+                            _view_probs, _target_features_all, _prototypes,
+                            _prototype_present, _c, _current_target_labels,
+                            previous_target_labels if previous_target_labels is not None
+                            else np.full(len(_current_target_labels), -1, dtype=np.int64),
+                            min_view_confidence=float(cfg["training"].get(
+                                "anchored_rescue_view_threshold", 0.60)),
+                            min_prototype_similarity=float(cfg["training"].get(
+                                "anchored_rescue_prototype_similarity", 0.50)),
                             limit=_rescue_per_class)
+                        _score = (_target_features_all @ _prototypes[_c]) * _view_probs[:, :, _c].max(axis=0)
                     else:
                         _r_idx = np.where((_agreement) & (_weights > 0)
                                           & _teacher_ok
@@ -1095,9 +1109,9 @@ def run_tcst_v8(cfg, device):
                                           & _teacher_rescue_ok
                                           & (_student_fused_conf >= _rescue_thr)
                                           & (_margin >= _rescue_margin))[0]
+                        _score = _pc * _weights
                     _r_idx = np.asarray([i for i in _r_idx if int(i) not in _main_index_set])
                     if len(_r_idx) > 0:
-                        _score = _shape_np[:, _c] if use_shape_rescue else _pc * _weights
                         _r_idx = _r_idx[np.argsort(-_score[_r_idx])]
                         _r_idx = _r_idx[:_rescue_per_class]
                         _selected_idx.extend(_r_idx.tolist())
@@ -1132,6 +1146,7 @@ def run_tcst_v8(cfg, device):
                 pseudo_state["counts"] = [0] * num_classes
                 pseudo_state["weight_sums"] = [0.0] * num_classes
                 _log(f"  [Pseudo] None selected (thr={_thr}, all-three agreement required)")
+            previous_target_labels = _current_target_labels.copy()
 
         src_mmd_idx = _class_balanced_subsample(src_tr_y, 128,
                                                 seed=cfg["output"]["seed"] + 500 + cycle)

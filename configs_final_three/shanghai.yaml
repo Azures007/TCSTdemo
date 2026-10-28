@@ -61,6 +61,8 @@ training:
   spectral_shape_rescue_margin: 0.02
   spectral_shape_view_threshold: 0.55
   spectral_shape_rescue_weight: 0.08
+  anchored_rescue_view_threshold: 0.60
+  anchored_rescue_prototype_similarity: 0.50
   pseudo_threshold: 0.88
   pseudo_weight: 0.20
   source_rollback_drop: 0
