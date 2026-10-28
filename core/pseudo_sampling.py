@@ -4,6 +4,61 @@ from __future__ import annotations
 import numpy as np
 
 
+def calibrate_prototype_thresholds(val_features, val_labels, prototypes,
+                                   prototype_present, quantile=0.05):
+    val_features = np.asarray(val_features, dtype=np.float64)
+    val_labels = np.asarray(val_labels, dtype=np.int64).reshape(-1)
+    prototypes = np.asarray(prototypes, dtype=np.float64)
+    prototype_present = np.asarray(prototype_present, dtype=bool).reshape(-1)
+    quantile = float(quantile)
+    if (val_features.ndim != 2 or prototypes.ndim != 2
+            or val_features.shape[0] != val_labels.size
+            or val_features.shape[1] != prototypes.shape[1]
+            or prototype_present.size != prototypes.shape[0]
+            or val_labels.size == 0 or val_labels.min() < 0
+            or val_labels.max() >= prototypes.shape[0]
+            or not 0.0 <= quantile <= 1.0
+            or not np.isfinite(val_features).all() or not np.isfinite(prototypes).all()):
+        raise ValueError("invalid validation features, labels or prototypes")
+    val_features = val_features / np.maximum(
+        np.linalg.norm(val_features, axis=1, keepdims=True), 1e-12)
+    prototypes = prototypes / np.maximum(
+        np.linalg.norm(prototypes, axis=1, keepdims=True), 1e-12)
+    safe_prototypes = prototypes.copy()
+    safe_prototypes[~prototype_present] = 0.0
+    similarities = np.sum(val_features * safe_prototypes[val_labels], axis=1)
+    thresholds = np.full(prototypes.shape[0], np.inf, dtype=np.float64)
+    for class_id in range(prototypes.shape[0]):
+        selected = similarities[(val_labels == class_id) & prototype_present[val_labels]]
+        if selected.size:
+            thresholds[class_id] = np.quantile(selected, quantile)
+    return thresholds
+
+
+def prototype_compatibility_mask(features, labels, prototypes, thresholds,
+                                 prototype_present):
+    features = np.asarray(features, dtype=np.float64)
+    labels = np.asarray(labels, dtype=np.int64).reshape(-1)
+    prototypes = np.asarray(prototypes, dtype=np.float64)
+    thresholds = np.asarray(thresholds, dtype=np.float64).reshape(-1)
+    prototype_present = np.asarray(prototype_present, dtype=bool).reshape(-1)
+    if (features.ndim != 2 or prototypes.ndim != 2
+            or features.shape[0] != labels.size or features.shape[1] != prototypes.shape[1]
+            or thresholds.size != prototypes.shape[0]
+            or prototype_present.size != prototypes.shape[0]
+            or (labels.size and (labels.min() < 0 or labels.max() >= prototypes.shape[0]))
+            or not np.isfinite(features).all() or not np.isfinite(prototypes).all()):
+        raise ValueError("invalid target features, labels or prototypes")
+    features = features / np.maximum(np.linalg.norm(features, axis=1, keepdims=True), 1e-12)
+    prototypes = prototypes / np.maximum(np.linalg.norm(prototypes, axis=1, keepdims=True), 1e-12)
+    prototypes = prototypes.copy()
+    prototypes[~prototype_present] = 0.0
+    similarities = np.sum(features * prototypes[labels], axis=1)
+    nearest_classes = np.argmax(features @ prototypes.T, axis=1)
+    return (prototype_present[labels] & (nearest_classes == labels)
+            & (similarities >= thresholds[labels]))
+
+
 def sample_pseudo_indices(labels, batch_size, rng):
     labels = np.asarray(labels, dtype=np.int64).reshape(-1)
     batch_size = int(batch_size)

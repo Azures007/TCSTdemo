@@ -5,6 +5,8 @@ import numpy as np
 from core.pseudo_sampling import sample_pseudo_indices
 from core.pseudo_sampling import select_shape_rescue_indices
 from core.pseudo_sampling import select_anchored_rescue_indices
+from core.pseudo_sampling import calibrate_prototype_thresholds
+from core.pseudo_sampling import prototype_compatibility_mask
 
 
 class PseudoSamplingTests(unittest.TestCase):
@@ -41,6 +43,25 @@ class PseudoSamplingTests(unittest.TestCase):
             current_labels=np.array([1, 1, 1]), previous_labels=previous,
             min_view_confidence=0.70, min_prototype_similarity=0.80, limit=8)
         self.assertEqual(selected.tolist(), [0])
+
+    def test_source_validation_calibrates_per_class_prototype_thresholds(self):
+        prototypes = np.array([[1.0, 0.0], [0.0, 1.0]])
+        val_features = np.array([[1.0, 0.0], [0.8, 0.6],
+                                 [0.0, 1.0], [0.6, 0.8]])
+        val_labels = np.array([0, 0, 1, 1])
+        thresholds = calibrate_prototype_thresholds(
+            val_features, val_labels, prototypes, np.ones(2, dtype=bool), quantile=0.0)
+        np.testing.assert_allclose(thresholds, [0.8, 0.8])
+
+    def test_prototype_gate_rejects_wrong_and_missing_class_prototypes(self):
+        features = np.array([[0.9, 0.1], [0.1, 0.9], [0.1, 0.9],
+                             [0.9, 0.1], [-1.0, 0.0]])
+        labels = np.array([0, 1, 0, 2, 0])
+        prototypes = np.array([[1.0, 0.0], [0.0, 1.0], [0.0, 0.0]])
+        thresholds = np.array([0.8, 0.8, -1.0])
+        present = np.array([True, True, False])
+        mask = prototype_compatibility_mask(features, labels, prototypes, thresholds, present)
+        self.assertEqual(mask.tolist(), [True, True, False, False, False])
 
 if __name__ == "__main__":
     unittest.main()

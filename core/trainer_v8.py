@@ -48,6 +48,8 @@ from core.discrepancy import (domain_gradient_mmd, spectral_descriptor,
 from core.metrics import classification_metrics, confusion_matrix
 from core.model import DualReliabilityEncoder
 from core.pseudo_sampling import (sample_pseudo_indices,
+                                   calibrate_prototype_thresholds,
+                                   prototype_compatibility_mask,
                                    select_anchored_rescue_indices)
 from core.risk_controller import backtracking_search
 from core.spectral_transform import SmoothSpectralTransform, ClassSmoothSpectralTransform
@@ -638,6 +640,9 @@ def run_tcst_v8(cfg, device):
         _log(f"[spectral-shape] enabled, weight={float(cfg['training'].get('spectral_shape_weight', 0.2)):.3f} "
              f"temp={float(cfg['training'].get('spectral_shape_temperature', 0.15)):.3f}")
     previous_target_labels = None
+    prototype_thresholds = None
+    source_prototypes = None
+    prototype_present = None
 
     def _source_prototypes():
         """Build normalized class prototypes from labeled source features only."""
@@ -653,6 +658,15 @@ def run_tcst_v8(cfg, device):
                 sums.index_add_(0, yb, feat)
                 counts.index_add_(0, yb, torch.ones_like(yb, dtype=counts.dtype))
         return F.normalize(sums / counts.clamp_min(1.0).unsqueeze(1), dim=1), counts
+
+    def _source_features(patches):
+        features = []
+        model.eval()
+        with torch.no_grad():
+            for start in range(0, len(patches), 256):
+                xb = torch.from_numpy(patches[start:start + 256]).to(device)
+                features.append(model(xb).features.float().cpu().numpy())
+        return np.concatenate(features, axis=0)
 
     use_prototype_gate = bool(cfg["training"].get("use_prototype_gate", use_pseudo))
     prototype_temperature = float(cfg["training"].get("prototype_temperature", 0.12))
@@ -900,6 +914,17 @@ def run_tcst_v8(cfg, device):
             _log(f"[scheduler] re-bound: {scheduler_name}, T_max={remaining_epochs} (remaining after warmup)")
         _log("[Optimizer] re-initialized after restoring best warmup model")
 
+    if use_pseudo:
+        _prototypes_t, _prototype_counts = _source_prototypes()
+        source_prototypes = _prototypes_t.cpu().numpy()
+        prototype_present = _prototype_counts.cpu().numpy() > 0
+        _source_val_features = _source_features(src_val_p)
+        prototype_thresholds = calibrate_prototype_thresholds(
+            _source_val_features, src_val_y, source_prototypes, prototype_present,
+            quantile=float(cfg["training"].get("prototype_gate_quantile", 0.05)))
+        _log("[prototype-gate] source-val calibrated thresholds="
+             f"{[round(float(x), 3) if np.isfinite(x) else None for x in prototype_thresholds]}")
+
     # === Direction B: BA-CS ===
     # T9d: 独立 domain calibration（在 BA-CS 之前定义，随机抽源域训练样本）
     _dom_rng = np.random.default_rng(cfg["output"]["seed"] + 777)
@@ -1061,10 +1086,12 @@ def run_tcst_v8(cfg, device):
                 torch.softmax(_spectral_all, dim=1).numpy(),
                 torch.softmax(_fused_all, dim=1).numpy(),
             ]) if use_shape_rescue else None
-            _prototypes_t, _prototype_counts = _source_prototypes()
-            _prototypes = _prototypes_t.cpu().numpy()
-            _prototype_present = _prototype_counts.cpu().numpy() > 0
+            _prototypes = source_prototypes
+            _prototype_present = prototype_present
             _current_target_labels = _student_fused_pl
+            _prototype_ok = prototype_compatibility_mask(
+                _target_features_all, _student_fused_pl, _prototypes,
+                prototype_thresholds, _prototype_present)
             _selected_idx, _selected_y, _selected_w = [], [], []
             _main_counts = np.zeros(num_classes, dtype=np.int64)
             _rescue_counts = np.zeros(num_classes, dtype=np.int64)
@@ -1073,7 +1100,8 @@ def run_tcst_v8(cfg, device):
                 _c_idx = np.where((_pl == _c) & (_all_agree)
                                   & (_conf >= _thr) & (_weights > 0)
                                   & _teacher_ok
-                                  & (_student_fused_pl == _c))[0]
+                                  & (_student_fused_pl == _c)
+                                  & _prototype_ok)[0]
                 if len(_c_idx) > 0:
                     _sorted_idx = _c_idx[np.argsort(-(_weights[_c_idx] * _conf[_c_idx]))]
                     _sorted_idx = _sorted_idx[:_per_class]
@@ -1101,11 +1129,13 @@ def run_tcst_v8(cfg, device):
                             min_prototype_similarity=float(cfg["training"].get(
                                 "anchored_rescue_prototype_similarity", 0.50)),
                             limit=_rescue_per_class)
+                        _r_idx = _r_idx[_prototype_ok[_r_idx]]
                         _score = (_target_features_all @ _prototypes[_c]) * _view_probs[:, :, _c].max(axis=0)
                     else:
                         _r_idx = np.where((_agreement) & (_weights > 0)
                                           & _teacher_ok
                                           & (_student_fused_pl == _c)
+                                          & _prototype_ok
                                           & _teacher_rescue_ok
                                           & (_student_fused_conf >= _rescue_thr)
                                           & (_margin >= _rescue_margin))[0]
@@ -1146,6 +1176,7 @@ def run_tcst_v8(cfg, device):
                 pseudo_state["counts"] = [0] * num_classes
                 pseudo_state["weight_sums"] = [0.0] * num_classes
                 _log(f"  [Pseudo] None selected (thr={_thr}, all-three agreement required)")
+            _log(f"  [prototype-gate] rejected={int((~_prototype_ok).sum())}/{len(_prototype_ok)}")
             previous_target_labels = _current_target_labels.copy()
 
         src_mmd_idx = _class_balanced_subsample(src_tr_y, 128,
